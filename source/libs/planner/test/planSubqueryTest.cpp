@@ -23,11 +23,11 @@ class PlanSubqeuryTest : public PlannerTestBase {};
 TEST_F(PlanSubqeuryTest, basic) {
   useDb("root", "test");
 
-  if (0 == g_skipSql) {
-    run("SELECT * FROM (SELECT * FROM t1)");
-  }
+  run("SELECT * FROM (SELECT * FROM t1)");
 
   run("SELECT LAST(c1) FROM (SELECT * FROM t1)");
+
+  run("SELECT c1 FROM (SELECT TODAY() AS c1 FROM t1)");
 }
 
 TEST_F(PlanSubqeuryTest, doubleGroupBy) {

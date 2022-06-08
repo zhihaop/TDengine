@@ -19,19 +19,17 @@
 static inline void smSendRsp(SRpcMsg *pMsg, int32_t code) {
   SRpcMsg rsp = {
       .code = code,
-      .info = pMsg->info,
       .pCont = pMsg->info.rsp,
       .contLen = pMsg->info.rspLen,
+      .info = pMsg->info,
   };
   tmsgSendRsp(&rsp);
 }
 
 static void smProcessMonitorQueue(SQueueInfo *pInfo, SRpcMsg *pMsg) {
   SSnodeMgmt *pMgmt = pInfo->ahandle;
-
+  int32_t     code = -1;
   dTrace("msg:%p, get from snode-monitor queue", pMsg);
-  SRpcMsg *pRpc = pMsg;
-  int32_t  code = -1;
 
   if (pMsg->msgType == TDMT_MON_SM_INFO) {
     code = smProcessGetMonitorInfoReq(pMgmt, pMsg);
@@ -39,13 +37,13 @@ static void smProcessMonitorQueue(SQueueInfo *pInfo, SRpcMsg *pMsg) {
     terrno = TSDB_CODE_MSG_NOT_PROCESSED;
   }
 
-  if (pRpc->msgType & 1U) {
+  if (IsReq(pMsg)) {
     if (code != 0 && terrno != 0) code = terrno;
     smSendRsp(pMsg, code);
   }
 
-  dTrace("msg:%p, is freed, result:0x%04x:%s", pMsg, code & 0XFFFF, tstrerror(code));
-  rpcFreeCont(pRpc->pCont);
+  dTrace("msg:%p, is freed, code:0x%x", pMsg, code);
+  rpcFreeCont(pMsg->pCont);
   taosFreeQitem(pMsg);
 }
 
@@ -166,7 +164,7 @@ int32_t smPutNodeMsgToMgmtQueue(SSnodeMgmt *pMgmt, SRpcMsg *pMsg) {
     return -1;
   }
 
-  dTrace("msg:%p, put into worker:%s", pMsg, pWorker->name);
+  dTrace("msg:%p, put into worker %s", pMsg, pWorker->name);
   taosWriteQitem(pWorker->queue, pMsg);
   return 0;
 }
@@ -174,7 +172,7 @@ int32_t smPutNodeMsgToMgmtQueue(SSnodeMgmt *pMgmt, SRpcMsg *pMsg) {
 int32_t smPutNodeMsgToMonitorQueue(SSnodeMgmt *pMgmt, SRpcMsg *pMsg) {
   SSingleWorker *pWorker = &pMgmt->monitorWorker;
 
-  dTrace("msg:%p, put into worker:%s", pMsg, pWorker->name);
+  dTrace("msg:%p, put into worker %s", pMsg, pWorker->name);
   taosWriteQitem(pWorker->queue, pMsg);
   return 0;
 }
@@ -187,7 +185,7 @@ int32_t smPutNodeMsgToUniqueQueue(SSnodeMgmt *pMgmt, SRpcMsg *pMsg) {
     return -1;
   }
 
-  dTrace("msg:%p, put into worker:%s", pMsg, pWorker->name);
+  dTrace("msg:%p, put into worker %s", pMsg, pWorker->name);
   taosWriteQitem(pWorker->queue, pMsg);
   return 0;
 }
@@ -195,7 +193,7 @@ int32_t smPutNodeMsgToUniqueQueue(SSnodeMgmt *pMgmt, SRpcMsg *pMsg) {
 int32_t smPutNodeMsgToSharedQueue(SSnodeMgmt *pMgmt, SRpcMsg *pMsg) {
   SSingleWorker *pWorker = &pMgmt->sharedWorker;
 
-  dTrace("msg:%p, put into worker:%s", pMsg, pWorker->name);
+  dTrace("msg:%p, put into worker %s", pMsg, pWorker->name);
   taosWriteQitem(pWorker->queue, pMsg);
   return 0;
 }

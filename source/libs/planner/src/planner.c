@@ -18,6 +18,13 @@
 #include "planInt.h"
 #include "scalar.h"
 
+static void dumpQueryPlan(SQueryPlan* pPlan) {
+  char* pStr = NULL;
+  nodesNodeToString(pPlan, false, &pStr, NULL);
+  planDebugL("Query Plan: %s", pStr);
+  taosMemoryFree(pStr);
+}
+
 int32_t qCreateQueryPlan(SPlanContext* pCxt, SQueryPlan** pPlan, SArray* pExecNodeList) {
   SLogicNode*      pLogicNode = NULL;
   SLogicSubplan*   pLogicSubplan = NULL;
@@ -36,6 +43,9 @@ int32_t qCreateQueryPlan(SPlanContext* pCxt, SQueryPlan** pPlan, SArray* pExecNo
   if (TSDB_CODE_SUCCESS == code) {
     code = createPhysiPlan(pCxt, pLogicPlan, pPlan, pExecNodeList);
   }
+  if (TSDB_CODE_SUCCESS == code) {
+    dumpQueryPlan(*pPlan);
+  }
 
   nodesDestroyNode(pLogicNode);
   nodesDestroyNode(pLogicSubplan);
@@ -48,16 +58,19 @@ static int32_t setSubplanExecutionNode(SPhysiNode* pNode, int32_t groupId, SDown
   if (QUERY_NODE_PHYSICAL_PLAN_EXCHANGE == nodeType(pNode)) {
     SExchangePhysiNode* pExchange = (SExchangePhysiNode*)pNode;
     if (pExchange->srcGroupId == groupId) {
-      if (NULL == pExchange->pSrcEndPoints) {
-        pExchange->pSrcEndPoints = nodesMakeList();
-        if (NULL == pExchange->pSrcEndPoints) {
-          return TSDB_CODE_OUT_OF_MEMORY;
-        }
+      return nodesListMakeStrictAppend(&pExchange->pSrcEndPoints, nodesCloneNode(pSource));
+    }
+  } else if (QUERY_NODE_PHYSICAL_PLAN_MERGE == nodeType(pNode)) {
+    SMergePhysiNode* pMerge = (SMergePhysiNode*)pNode;
+    if (pMerge->srcGroupId == groupId) {
+      SExchangePhysiNode* pExchange =
+          (SExchangePhysiNode*)nodesListGetNode(pMerge->node.pChildren, pMerge->numOfChannels - 1);
+      if (1 == pMerge->numOfChannels) {
+        pMerge->numOfChannels = LIST_LENGTH(pMerge->node.pChildren);
+      } else {
+        --(pMerge->numOfChannels);
       }
-      if (TSDB_CODE_SUCCESS != nodesListStrictAppend(pExchange->pSrcEndPoints, nodesCloneNode(pSource))) {
-        return TSDB_CODE_OUT_OF_MEMORY;
-      }
-      return TSDB_CODE_SUCCESS;
+      return nodesListMakeStrictAppend(&pExchange->pSrcEndPoints, nodesCloneNode(pSource));
     }
   }
 
@@ -75,7 +88,7 @@ int32_t qSetSubplanExecutionNode(SSubplan* subplan, int32_t groupId, SDownstream
 }
 
 int32_t qSubPlanToString(const SSubplan* pSubplan, char** pStr, int32_t* pLen) {
-  if (SUBPLAN_TYPE_MODIFY == pSubplan->subplanType) {
+  if (SUBPLAN_TYPE_MODIFY == pSubplan->subplanType && NULL == pSubplan->pNode) {
     SDataInserterNode* insert = (SDataInserterNode*)pSubplan->pDataSink;
     *pLen = insert->size;
     *pStr = insert->pData;

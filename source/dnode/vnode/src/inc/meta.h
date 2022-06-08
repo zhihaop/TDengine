@@ -16,23 +16,24 @@
 #ifndef _TD_VNODE_META_H_
 #define _TD_VNODE_META_H_
 
+#include "index.h"
 #include "vnodeInt.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef struct SMetaIdx    SMetaIdx;
-typedef struct SMetaDB     SMetaDB;
+typedef struct SMetaIdx SMetaIdx;
+typedef struct SMetaDB  SMetaDB;
 
 // metaDebug ==================
 // clang-format off
-#define metaFatal(...) do { if (metaDebugFlag & DEBUG_FATAL) { taosPrintLog("META FATAL ", DEBUG_FATAL, 255, __VA_ARGS__); }}     while(0)
-#define metaError(...) do { if (metaDebugFlag & DEBUG_ERROR) { taosPrintLog("META ERROR ", DEBUG_ERROR, 255, __VA_ARGS__); }}     while(0)
-#define metaWarn(...)  do { if (metaDebugFlag & DEBUG_WARN)  { taosPrintLog("META WARN ", DEBUG_WARN, 255, __VA_ARGS__); }}       while(0)
-#define metaInfo(...)  do { if (metaDebugFlag & DEBUG_INFO)  { taosPrintLog("META ", DEBUG_INFO, 255, __VA_ARGS__); }}            while(0)
-#define metaDebug(...) do { if (metaDebugFlag & DEBUG_DEBUG) { taosPrintLog("META ", DEBUG_DEBUG, metaDebugFlag, __VA_ARGS__); }} while(0)
-#define metaTrace(...) do { if (metaDebugFlag & DEBUG_TRACE) { taosPrintLog("META ", DEBUG_TRACE, metaDebugFlag, __VA_ARGS__); }} while(0)
+#define metaFatal(...) do { if (metaDebugFlag & DEBUG_FATAL) { taosPrintLog("MTA FATAL ", DEBUG_FATAL, 255, __VA_ARGS__); }}     while(0)
+#define metaError(...) do { if (metaDebugFlag & DEBUG_ERROR) { taosPrintLog("MTA ERROR ", DEBUG_ERROR, 255, __VA_ARGS__); }}     while(0)
+#define metaWarn(...)  do { if (metaDebugFlag & DEBUG_WARN)  { taosPrintLog("MTA WARN ", DEBUG_WARN, 255, __VA_ARGS__); }}       while(0)
+#define metaInfo(...)  do { if (metaDebugFlag & DEBUG_INFO)  { taosPrintLog("MTA ", DEBUG_INFO, 255, __VA_ARGS__); }}            while(0)
+#define metaDebug(...) do { if (metaDebugFlag & DEBUG_DEBUG) { taosPrintLog("MTA ", DEBUG_DEBUG, metaDebugFlag, __VA_ARGS__); }} while(0)
+#define metaTrace(...) do { if (metaDebugFlag & DEBUG_TRACE) { taosPrintLog("MTA ", DEBUG_TRACE, metaDebugFlag, __VA_ARGS__); }} while(0)
 // clang-format on
 
 // metaOpen ==================
@@ -43,8 +44,6 @@ int32_t metaULock(SMeta* pMeta);
 // metaEntry ==================
 int metaEncodeEntry(SEncoder* pCoder, const SMetaEntry* pME);
 int metaDecodeEntry(SDecoder* pCoder, SMetaEntry* pME);
-
-// metaTable ==================
 
 // metaQuery ==================
 int metaGetTableEntryByVersion(SMetaReader* pReader, int64_t version, tb_uid_t uid);
@@ -61,18 +60,21 @@ static FORCE_INLINE tb_uid_t metaGenerateUid(SMeta* pMeta) { return tGenIdPI64()
 struct SMeta {
   TdThreadRwlock lock;
 
-  char*     path;
-  SVnode*   pVnode;
-  TENV*     pEnv;
-  TXN       txn;
-  TDB*      pTbDb;
-  TDB*      pSkmDb;
-  TDB*      pUidIdx;
-  TDB*      pNameIdx;
-  TDB*      pCtbIdx;
-  TDB*      pTagIdx;
-  TDB*      pTtlIdx;
-  TDB*      pSmaIdx;
+  char*   path;
+  SVnode* pVnode;
+  TDB*    pEnv;
+  TXN     txn;
+  TTB*    pTbDb;
+  TTB*    pSkmDb;
+  TTB*    pUidIdx;
+  TTB*    pNameIdx;
+  TTB*    pCtbIdx;
+  // ivt idx and idx
+  void* pTagIvtIdx;
+  TTB*  pTagIdx;
+  TTB*  pTtlIdx;
+
+  TTB*      pSmaIdx;
   SMetaIdx* pIdx;
 };
 
@@ -113,12 +115,16 @@ typedef struct {
   int64_t  smaUid;
 } SSmaIdxKey;
 
+// metaTable ==================
+int metaCreateTagIdxKey(tb_uid_t suid, int32_t cid, const void* pTagData, int32_t nTagData, int8_t type, tb_uid_t uid,
+                        STagIdxKey** ppTagIdxKey, int32_t* nTagIdxKey);
+
 #ifndef META_REFACT
 // SMetaDB
 int  metaOpenDB(SMeta* pMeta);
 void metaCloseDB(SMeta* pMeta);
 int  metaSaveTableToDB(SMeta* pMeta, STbCfg* pTbCfg, STbDdlH* pHandle);
-int metaRemoveTableFromDb(SMeta* pMeta, tb_uid_t uid);
+int  metaRemoveTableFromDb(SMeta* pMeta, tb_uid_t uid);
 #endif
 
 #ifdef __cplusplus

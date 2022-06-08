@@ -35,7 +35,6 @@ static int32_t mndStreamActionInsert(SSdb *pSdb, SStreamObj *pStream);
 static int32_t mndStreamActionDelete(SSdb *pSdb, SStreamObj *pStream);
 static int32_t mndStreamActionUpdate(SSdb *pSdb, SStreamObj *pStream, SStreamObj *pNewStream);
 static int32_t mndProcessCreateStreamReq(SRpcMsg *pReq);
-static int32_t mndProcessTaskDeployInternalRsp(SRpcMsg *pRsp);
 /*static int32_t mndProcessDropStreamReq(SRpcMsg *pReq);*/
 /*static int32_t mndProcessDropStreamInRsp(SRpcMsg *pRsp);*/
 static int32_t mndProcessStreamMetaReq(SRpcMsg *pReq);
@@ -44,17 +43,19 @@ static int32_t mndRetrieveStream(SRpcMsg *pReq, SShowObj *pShow, SSDataBlock *pB
 static void    mndCancelGetNextStream(SMnode *pMnode, void *pIter);
 
 int32_t mndInitStream(SMnode *pMnode) {
-  SSdbTable table = {.sdbType = SDB_STREAM,
-                     .keyType = SDB_KEY_BINARY,
-                     .encodeFp = (SdbEncodeFp)mndStreamActionEncode,
-                     .decodeFp = (SdbDecodeFp)mndStreamActionDecode,
-                     .insertFp = (SdbInsertFp)mndStreamActionInsert,
-                     .updateFp = (SdbUpdateFp)mndStreamActionUpdate,
-                     .deleteFp = (SdbDeleteFp)mndStreamActionDelete};
+  SSdbTable table = {
+      .sdbType = SDB_STREAM,
+      .keyType = SDB_KEY_BINARY,
+      .encodeFp = (SdbEncodeFp)mndStreamActionEncode,
+      .decodeFp = (SdbDecodeFp)mndStreamActionDecode,
+      .insertFp = (SdbInsertFp)mndStreamActionInsert,
+      .updateFp = (SdbUpdateFp)mndStreamActionUpdate,
+      .deleteFp = (SdbDeleteFp)mndStreamActionDelete,
+  };
 
   mndSetMsgHandle(pMnode, TDMT_MND_CREATE_STREAM, mndProcessCreateStreamReq);
-  mndSetMsgHandle(pMnode, TDMT_VND_TASK_DEPLOY_RSP, mndProcessTaskDeployInternalRsp);
-  mndSetMsgHandle(pMnode, TDMT_SND_TASK_DEPLOY_RSP, mndProcessTaskDeployInternalRsp);
+  mndSetMsgHandle(pMnode, TDMT_STREAM_TASK_DEPLOY_RSP, mndTransProcessRsp);
+  /*mndSetMsgHandle(pMnode, TDMT_SND_TASK_DEPLOY_RSP, mndTransProcessRsp);*/
   /*mndSetMsgHandle(pMnode, TDMT_MND_DROP_STREAM, mndProcessDropStreamReq);*/
   /*mndSetMsgHandle(pMnode, TDMT_MND_DROP_STREAM_RSP, mndProcessDropStreamInRsp);*/
 
@@ -195,11 +196,6 @@ void mndReleaseStream(SMnode *pMnode, SStreamObj *pStream) {
   sdbRelease(pSdb, pStream);
 }
 
-static int32_t mndProcessTaskDeployInternalRsp(SRpcMsg *pRsp) {
-  mndTransProcessRsp(pRsp);
-  return 0;
-}
-
 static SDbObj *mndAcquireDbByStream(SMnode *pMnode, char *streamName) {
   SName name = {0};
   tNameFromString(&name, streamName, T_NAME_ACCT | T_NAME_DB | T_NAME_TABLE);
@@ -279,13 +275,13 @@ int32_t mndAddStreamToTrans(SMnode *pMnode, SStreamObj *pStream, const char *ast
   }
   mDebug("trans:%d, used to create stream:%s", pTrans->id, pStream->name);
 
-  SSdbRaw *pRedoRaw = mndStreamActionEncode(pStream);
-  if (pRedoRaw == NULL || mndTransAppendRedolog(pTrans, pRedoRaw) != 0) {
-    mError("trans:%d, failed to append redo log since %s", pTrans->id, terrstr());
+  SSdbRaw *pCommitRaw = mndStreamActionEncode(pStream);
+  if (pCommitRaw == NULL || mndTransAppendCommitlog(pTrans, pCommitRaw) != 0) {
+    mError("trans:%d, failed to append commit log since %s", pTrans->id, terrstr());
     mndTransDrop(pTrans);
     return -1;
   }
-  sdbSetRawStatus(pRedoRaw, SDB_STATUS_READY);
+  sdbSetRawStatus(pCommitRaw, SDB_STATUS_READY);
 
   return 0;
 }
@@ -393,7 +389,16 @@ static int32_t mndCreateStream(SMnode *pMnode, SRpcMsg *pReq, SCMCreateStreamReq
   streamObj.trigger = pCreate->triggerType;
   streamObj.waterMark = pCreate->watermark;
 
-  STrans *pTrans = mndTransCreate(pMnode, TRN_POLICY_ROLLBACK, TRN_TYPE_CREATE_STREAM, pReq);
+  if (streamObj.targetSTbName[0]) {
+    pDb = mndAcquireDbByStb(pMnode, streamObj.targetSTbName);
+    if (pDb == NULL) {
+      terrno = TSDB_CODE_MND_DB_NOT_SELECTED;
+      return -1;
+    }
+    tstrncpy(streamObj.targetDb, pDb->name, TSDB_DB_FNAME_LEN);
+  }
+
+  STrans *pTrans = mndTransCreate(pMnode, TRN_POLICY_ROLLBACK, TRN_CONFLICT_NOTHING, pReq);
   if (pTrans == NULL) {
     mError("stream:%s, failed to create since %s", pCreate->name, terrstr());
     return -1;
@@ -456,7 +461,7 @@ static int32_t mndProcessCreateStreamReq(SRpcMsg *pReq) {
     goto CREATE_STREAM_OVER;
   }
 
-  pDb = mndAcquireDbByStream(pMnode, createStreamReq.name);
+  pDb = mndAcquireDb(pMnode, createStreamReq.sourceDB);
   if (pDb == NULL) {
     terrno = TSDB_CODE_MND_DB_NOT_SELECTED;
     goto CREATE_STREAM_OVER;
@@ -472,10 +477,10 @@ static int32_t mndProcessCreateStreamReq(SRpcMsg *pReq) {
   }
 
   code = mndCreateStream(pMnode, pReq, &createStreamReq, pDb);
-  if (code == 0) code = TSDB_CODE_MND_ACTION_IN_PROGRESS;
+  if (code == 0) code = TSDB_CODE_ACTION_IN_PROGRESS;
 
 CREATE_STREAM_OVER:
-  if (code != 0 && code != TSDB_CODE_MND_ACTION_IN_PROGRESS) {
+  if (code != 0 && code != TSDB_CODE_ACTION_IN_PROGRESS) {
     mError("stream:%s, failed to create since %s", createStreamReq.name, terrstr());
   }
 

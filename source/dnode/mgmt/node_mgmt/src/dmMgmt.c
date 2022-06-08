@@ -15,6 +15,8 @@
 
 #define _DEFAULT_SOURCE
 #include "dmMgmt.h"
+#include "dmNodes.h"
+#include "qworker.h"
 
 static bool dmRequireNode(SDnode *pDnode, SMgmtWrapper *pWrapper) {
   SMgmtInputOpt input = dmBuildMgmtInputOpt(pWrapper);
@@ -90,7 +92,7 @@ static int32_t dmInitVars(SDnode *pDnode, EDndNodeType rtype) {
     return -1;
   }
 
-  taosInitRWLatch(&pData->latch);
+  taosThreadRwlockInit(&pData->lock, NULL);
   taosThreadMutexInit(&pDnode->mutex, NULL);
   return 0;
 }
@@ -99,6 +101,7 @@ static void dmClearVars(SDnode *pDnode) {
   for (EDndNodeType ntype = DNODE; ntype < NODE_END; ++ntype) {
     SMgmtWrapper *pWrapper = &pDnode->wrappers[ntype];
     taosMemoryFreeClear(pWrapper->path);
+    taosThreadRwlockDestroy(&pWrapper->lock);
   }
   if (pDnode->lockfile != NULL) {
     taosUnLockFile(pDnode->lockfile);
@@ -107,7 +110,7 @@ static void dmClearVars(SDnode *pDnode) {
   }
 
   SDnodeData *pData = &pDnode->data;
-  taosWLockLatch(&pData->latch);
+  taosThreadRwlockWrlock(&pData->lock);
   if (pData->dnodeEps != NULL) {
     taosArrayDestroy(pData->dnodeEps);
     pData->dnodeEps = NULL;
@@ -116,8 +119,9 @@ static void dmClearVars(SDnode *pDnode) {
     taosHashCleanup(pData->dnodeHash);
     pData->dnodeHash = NULL;
   }
-  taosWUnLockLatch(&pData->latch);
+  taosThreadRwlockUnlock(&pData->lock);
 
+  taosThreadRwlockDestroy(&pData->lock);
   taosThreadMutexDestroy(&pDnode->mutex);
   memset(&pDnode->mutex, 0, sizeof(pDnode->mutex));
 }
@@ -150,7 +154,7 @@ int32_t dmInitDnode(SDnode *pDnode, EDndNodeType rtype) {
     if (ntype == DNODE) {
       pWrapper->proc.ptype = DND_PROC_SINGLE;
     }
-    taosInitRWLatch(&pWrapper->latch);
+    taosThreadRwlockInit(&pWrapper->lock, NULL);
 
     snprintf(path, sizeof(path), "%s%s%s", tsDataDir, TD_DIRSEP, pWrapper->name);
     pWrapper->path = strdup(path);
@@ -189,7 +193,7 @@ int32_t dmInitDnode(SDnode *pDnode, EDndNodeType rtype) {
   }
 
   dmReportStartup("dnode-transport", "initialized");
-  dInfo("dnode is created, ptr:%p", pDnode);
+  dDebug("dnode is created, ptr:%p", pDnode);
   code = 0;
 
 _OVER:
@@ -208,7 +212,7 @@ void dmCleanupDnode(SDnode *pDnode) {
   dmCleanupClient(pDnode);
   dmCleanupServer(pDnode);
   dmClearVars(pDnode);
-  dInfo("dnode is closed, ptr:%p", pDnode);
+  dDebug("dnode is closed, ptr:%p", pDnode);
 }
 
 void dmSetStatus(SDnode *pDnode, EDndRunStatus status) {
@@ -222,15 +226,15 @@ SMgmtWrapper *dmAcquireWrapper(SDnode *pDnode, EDndNodeType ntype) {
   SMgmtWrapper *pWrapper = &pDnode->wrappers[ntype];
   SMgmtWrapper *pRetWrapper = pWrapper;
 
-  taosRLockLatch(&pWrapper->latch);
+  taosThreadRwlockRdlock(&pWrapper->lock);
   if (pWrapper->deployed) {
     int32_t refCount = atomic_add_fetch_32(&pWrapper->refCount, 1);
-    dTrace("node:%s, is acquired, ref:%d", pWrapper->name, refCount);
+    // dTrace("node:%s, is acquired, ref:%d", pWrapper->name, refCount);
   } else {
     terrno = TSDB_CODE_NODE_NOT_DEPLOYED;
     pRetWrapper = NULL;
   }
-  taosRUnLockLatch(&pWrapper->latch);
+  taosThreadRwlockUnlock(&pWrapper->lock);
 
   return pRetWrapper;
 }
@@ -238,15 +242,15 @@ SMgmtWrapper *dmAcquireWrapper(SDnode *pDnode, EDndNodeType ntype) {
 int32_t dmMarkWrapper(SMgmtWrapper *pWrapper) {
   int32_t code = 0;
 
-  taosRLockLatch(&pWrapper->latch);
+  taosThreadRwlockRdlock(&pWrapper->lock);
   if (pWrapper->deployed || (InParentProc(pWrapper) && pWrapper->required)) {
     int32_t refCount = atomic_add_fetch_32(&pWrapper->refCount, 1);
-    dTrace("node:%s, is marked, ref:%d", pWrapper->name, refCount);
+    // dTrace("node:%s, is marked, ref:%d", pWrapper->name, refCount);
   } else {
     terrno = TSDB_CODE_NODE_NOT_DEPLOYED;
     code = -1;
   }
-  taosRUnLockLatch(&pWrapper->latch);
+  taosThreadRwlockUnlock(&pWrapper->lock);
 
   return code;
 }
@@ -254,10 +258,10 @@ int32_t dmMarkWrapper(SMgmtWrapper *pWrapper) {
 void dmReleaseWrapper(SMgmtWrapper *pWrapper) {
   if (pWrapper == NULL) return;
 
-  taosRLockLatch(&pWrapper->latch);
+  taosThreadRwlockRdlock(&pWrapper->lock);
   int32_t refCount = atomic_sub_fetch_32(&pWrapper->refCount, 1);
-  taosRUnLockLatch(&pWrapper->latch);
-  dTrace("node:%s, is released, ref:%d", pWrapper->name, refCount);
+  taosThreadRwlockUnlock(&pWrapper->lock);
+  // dTrace("node:%s, is released, ref:%d", pWrapper->name, refCount);
 }
 
 static void dmGetServerStartupStatus(SDnode *pDnode, SServerStatusRsp *pStatus) {
@@ -274,41 +278,39 @@ static void dmGetServerStartupStatus(SDnode *pDnode, SServerStatusRsp *pStatus) 
   }
 }
 
-void dmProcessNetTestReq(SDnode *pDnode, SRpcMsg *pReq) {
-  dDebug("net test req is received");
-  SRpcMsg rsp = {.code = 0, .info = pReq->info};
-  rsp.pCont = rpcMallocCont(pReq->contLen);
+void dmProcessNetTestReq(SDnode *pDnode, SRpcMsg *pMsg) {
+  dDebug("msg:%p, net test req will be processed", pMsg);
+
+  SRpcMsg rsp = {.info = pMsg->info};
+  rsp.pCont = rpcMallocCont(pMsg->contLen);
   if (rsp.pCont == NULL) {
     rsp.code = TSDB_CODE_OUT_OF_MEMORY;
   } else {
-    rsp.contLen = pReq->contLen;
+    rsp.contLen = pMsg->contLen;
   }
+
   rpcSendResponse(&rsp);
+  rpcFreeCont(pMsg->pCont);
 }
 
-void dmProcessServerStartupStatus(SDnode *pDnode, SRpcMsg *pReq) {
-  dDebug("server startup status req is received");
+void dmProcessServerStartupStatus(SDnode *pDnode, SRpcMsg *pMsg) {
+  dDebug("msg:%p, server startup status req will be processed", pMsg);
 
   SServerStatusRsp statusRsp = {0};
   dmGetServerStartupStatus(pDnode, &statusRsp);
 
-  SRpcMsg rspMsg = {.info = pReq->info};
-  int32_t rspLen = tSerializeSServerStatusRsp(NULL, 0, &statusRsp);
-  if (rspLen < 0) {
-    rspMsg.code = TSDB_CODE_OUT_OF_MEMORY;
-    goto _OVER;
+  SRpcMsg rsp = {.info = pMsg->info};
+  int32_t contLen = tSerializeSServerStatusRsp(NULL, 0, &statusRsp);
+  if (contLen < 0) {
+    rsp.code = TSDB_CODE_OUT_OF_MEMORY;
+  } else {
+    rsp.pCont = rpcMallocCont(contLen);
+    if (rsp.pCont != NULL) {
+      tSerializeSServerStatusRsp(rsp.pCont, contLen, &statusRsp);
+      rsp.contLen = contLen;
+    }
   }
 
-  void *pRsp = rpcMallocCont(rspLen);
-  if (pRsp == NULL) {
-    rspMsg.code = TSDB_CODE_OUT_OF_MEMORY;
-    goto _OVER;
-  }
-
-  tSerializeSServerStatusRsp(pRsp, rspLen, &statusRsp);
-  rspMsg.pCont = pRsp;
-  rspMsg.contLen = rspLen;
-
-_OVER:
-  rpcSendResponse(&rspMsg);
+  rpcSendResponse(&rsp);
+  rpcFreeCont(pMsg->pCont);
 }

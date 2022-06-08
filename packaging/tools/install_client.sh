@@ -248,7 +248,6 @@ function update_TDengine() {
         exit 1
     fi
     tar -zxf ${tarName}
-
     echo -e "${GREEN}Start to update ${productName} client...${NC}"
     # Stop the client shell if running
     if pidof ${clientName} &> /dev/null; then
@@ -276,45 +275,44 @@ function update_TDengine() {
 }
 
 function install_TDengine() {
-  # Start to install
-  if [ ! -e ${tarName} ]; then
-    echo "File ${tarName} does not exist"
-    exit 1
-  fi
-  tar -zxf ${tarName}
+    # Start to install
+    if [ ! -e ${tarName} ]; then
+        echo "File ${tarName} does not exist"
+        exit 1
+    fi
+    tar -zxf ${tarName}
+    echo -e "${GREEN}Start to install ${productName} client...${NC}"
 
-  echo -e "${GREEN}Start to install ${productName} client...${NC}"
+    install_main_path
+    install_log
+    install_header
+    install_lib
+    install_jemalloc
+    if [ "$verMode" == "cluster" ]; then
+        install_connector
+    fi
+    install_examples
+    install_bin
+    install_config
 
-  install_main_path
-  install_log
-  install_header
-  install_lib
-  install_jemalloc
-  if [ "$verMode" == "cluster" ]; then
-    install_connector
-  fi
-  install_examples
-  install_bin
-  install_config
+    echo
+    echo -e "\033[44;32;1m${productName} client is installed successfully!${NC}"
 
-  echo
-  echo -e "\033[44;32;1m${productName} client is installed successfully!${NC}"
-
-  rm -rf $(tar -tf ${tarName})
+    rm -rf $(tar -tf ${tarName})
 }
 
 
 ## ==============================Main program starts from here============================
 # Install or updata client and client
 # if server is already install, don't install client
-  if [ -e ${bin_dir}/${serverName} ]; then
-      echo -e "\033[44;32;1mThere are already installed ${productName} server, so don't need install client!${NC}"
-      exit 0
-  fi
+if [ -e ${bin_dir}/${serverName} ]; then
+    echo -e "\033[44;32;1mThere are already installed ${productName} server, so don't need install client!${NC}"
+    exit 0
+fi
 
-  if [ -x ${bin_dir}/${clientName} ]; then
-      update_flag=1
-      update_TDengine
-  else
-      install_TDengine
-  fi
+if [ -x ${bin_dir}/${clientName} ]; then
+    update_flag=1
+    update_TDengine
+else
+    install_TDengine
+fi

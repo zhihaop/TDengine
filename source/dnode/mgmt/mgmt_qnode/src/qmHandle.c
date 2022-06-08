@@ -16,9 +16,21 @@
 #define _DEFAULT_SOURCE
 #include "qmInt.h"
 
-static void qmGetMonitorInfo(SQnodeMgmt *pMgmt, SMonQmInfo *qmInfo) {}
+void qmGetMonitorInfo(SQnodeMgmt *pMgmt, SMonQmInfo *qmInfo) {
+  SQnodeLoad qload = {0};
+  qndGetLoad(pMgmt->pQnode, &qload);
 
-int32_t qmProcessGetMonitorInfoReq(SQnodeMgmt *pMgmt, SRpcMsg *pReq) {
+  qload.dnodeId = pMgmt->pData->dnodeId;
+
+}
+
+void qmGetQnodeLoads(SQnodeMgmt *pMgmt, SQnodeLoad *pInfo) {
+  qndGetLoad(pMgmt->pQnode, pInfo);
+
+  pInfo->dnodeId = pMgmt->pData->dnodeId;
+}
+
+int32_t qmProcessGetMonitorInfoReq(SQnodeMgmt *pMgmt, SRpcMsg *pMsg) {
   SMonQmInfo qmInfo = {0};
   qmGetMonitorInfo(pMgmt, &qmInfo);
   dmGetMonitorSystemInfo(&qmInfo.sys);
@@ -37,17 +49,15 @@ int32_t qmProcessGetMonitorInfoReq(SQnodeMgmt *pMgmt, SRpcMsg *pReq) {
   }
 
   tSerializeSMonQmInfo(pRsp, rspLen, &qmInfo);
-  pReq->info.rsp = pRsp;
-  pReq->info.rspLen = rspLen;
+  pMsg->info.rsp = pRsp;
+  pMsg->info.rspLen = rspLen;
   tFreeSMonQmInfo(&qmInfo);
   return 0;
 }
 
 int32_t qmProcessCreateReq(const SMgmtInputOpt *pInput, SRpcMsg *pMsg) {
-  SRpcMsg *pReq = pMsg;
-
   SDCreateQnodeReq createReq = {0};
-  if (tDeserializeSCreateDropMQSBNodeReq(pReq->pCont, pReq->contLen, &createReq) != 0) {
+  if (tDeserializeSCreateDropMQSBNodeReq(pMsg->pCont, pMsg->contLen, &createReq) != 0) {
     terrno = TSDB_CODE_INVALID_MSG;
     return -1;
   }
@@ -68,10 +78,8 @@ int32_t qmProcessCreateReq(const SMgmtInputOpt *pInput, SRpcMsg *pMsg) {
 }
 
 int32_t qmProcessDropReq(const SMgmtInputOpt *pInput, SRpcMsg *pMsg) {
-  SRpcMsg *pReq = pMsg;
-
   SDDropQnodeReq dropReq = {0};
-  if (tDeserializeSCreateDropMQSBNodeReq(pReq->pCont, pReq->contLen, &dropReq) != 0) {
+  if (tDeserializeSCreateDropMQSBNodeReq(pMsg->pCont, pMsg->contLen, &dropReq) != 0) {
     terrno = TSDB_CODE_INVALID_MSG;
     return -1;
   }
@@ -105,8 +113,6 @@ SArray *qmGetMsgHandles() {
   if (dmSetMgmtHandle(pArray, TDMT_VND_FETCH_RSP, qmPutNodeMsgToFetchQueue, 1) == NULL) goto _OVER;
   if (dmSetMgmtHandle(pArray, TDMT_VND_QUERY_HEARTBEAT, qmPutNodeMsgToFetchQueue, 1) == NULL) goto _OVER;
 
-  if (dmSetMgmtHandle(pArray, TDMT_VND_RES_READY, qmPutNodeMsgToFetchQueue, 1) == NULL) goto _OVER;
-  if (dmSetMgmtHandle(pArray, TDMT_VND_TASKS_STATUS, qmPutNodeMsgToFetchQueue, 1) == NULL) goto _OVER;
   if (dmSetMgmtHandle(pArray, TDMT_VND_CANCEL_TASK, qmPutNodeMsgToFetchQueue, 1) == NULL) goto _OVER;
   if (dmSetMgmtHandle(pArray, TDMT_VND_DROP_TASK, qmPutNodeMsgToFetchQueue, 1) == NULL) goto _OVER;
 

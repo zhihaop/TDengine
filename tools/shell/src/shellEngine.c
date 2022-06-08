@@ -195,16 +195,16 @@ void shellRunSingleCommandImp(char *command) {
 
     et = taosGetTimestampUs();
     if (error_no == 0) {
-      printf("Query OK, %d row(s) in set (%.6fs)\n", numOfRows, (et - st) / 1E6);
+      printf("Query OK, %d rows affected (%.6fs)\n", numOfRows, (et - st) / 1E6);
     } else {
-      printf("Query interrupted (%s), %d row(s) in set (%.6fs)\n", taos_errstr(pSql), numOfRows, (et - st) / 1E6);
+      printf("Query interrupted (%s), %d rows affected (%.6fs)\n", taos_errstr(pSql), numOfRows, (et - st) / 1E6);
     }
     taos_free_result(pSql);
   } else {
     int32_t num_rows_affacted = taos_affected_rows(pSql);
     taos_free_result(pSql);
     et = taosGetTimestampUs();
-    printf("Query OK, %d of %d row(s) in database (%.6fs)\n", num_rows_affacted, num_rows_affacted, (et - st) / 1E6);
+    printf("Query OK, %d of %d rows affected (%.6fs)\n", num_rows_affacted, num_rows_affacted, (et - st) / 1E6);
   }
 
   printf("\n");
@@ -315,6 +315,7 @@ void shellDumpFieldToFile(TdFilePtr pFile, const char *val, TAOS_FIELD *field, i
       break;
     case TSDB_DATA_TYPE_BINARY:
     case TSDB_DATA_TYPE_NCHAR:
+    case TSDB_DATA_TYPE_JSON:
       memcpy(buf, val, length);
       buf[length] = 0;
       taosFprintfFile(pFile, "\'%s\'", buf);
@@ -384,19 +385,25 @@ void shellPrintNChar(const char *str, int32_t length, int32_t width) {
   while (pos < length) {
     TdWchar wc;
     int32_t bytes = taosMbToWchar(&wc, str + pos, MB_CUR_MAX);
-    if (bytes == 0) {
-      break;
-    }
-    pos += bytes;
-    if (pos > length) {
+    if (bytes <= 0) {
       break;
     }
 
+    if (pos + bytes > length) {
+      break;
+    }
+    int w = 0;
 #ifdef WINDOWS
-    int32_t w = bytes;
+    w = bytes;
 #else
-    int32_t w = taosWcharWidth(wc);
+    if(*(str + pos) == '\t' || *(str + pos) == '\n' || *(str + pos) == '\r'){
+      w = bytes;
+    }else{
+      w = taosWcharWidth(wc);
+    }
 #endif
+    pos += bytes;
+
     if (w <= 0) {
       continue;
     }
@@ -496,6 +503,7 @@ void shellPrintField(const char *val, TAOS_FIELD *field, int32_t width, int32_t 
       break;
     case TSDB_DATA_TYPE_BINARY:
     case TSDB_DATA_TYPE_NCHAR:
+    case TSDB_DATA_TYPE_JSON:
       shellPrintNChar(val, length, width);
       break;
     case TSDB_DATA_TYPE_TIMESTAMP:
@@ -579,6 +587,8 @@ int32_t shellCalcColWidth(TAOS_FIELD *field, int32_t precision) {
   int32_t width = (int32_t)strlen(field->name);
 
   switch (field->type) {
+    case TSDB_DATA_TYPE_NULL:
+      return TMAX(4, width);  // null
     case TSDB_DATA_TYPE_BOOL:
       return TMAX(5, width);  // 'false'
 
@@ -604,7 +614,6 @@ int32_t shellCalcColWidth(TAOS_FIELD *field, int32_t precision) {
     case TSDB_DATA_TYPE_DOUBLE:
       return TMAX(25, width);
 
-    case TSDB_DATA_TYPE_JSON:
     case TSDB_DATA_TYPE_BINARY:
       if (field->bytes > shell.args.displayWidth) {
         return TMAX(shell.args.displayWidth, width);
@@ -612,7 +621,8 @@ int32_t shellCalcColWidth(TAOS_FIELD *field, int32_t precision) {
         return TMAX(field->bytes, width);
       }
 
-    case TSDB_DATA_TYPE_NCHAR: {
+    case TSDB_DATA_TYPE_NCHAR:
+    case TSDB_DATA_TYPE_JSON: {
       int16_t bytes = field->bytes * TSDB_NCHAR_SIZE;
       if (bytes > shell.args.displayWidth) {
         return TMAX(shell.args.displayWidth, width);
@@ -734,6 +744,7 @@ void shellReadHistory() {
   int32_t read_size = 0;
   while ((read_size = taosGetLineFile(pFile, &line)) != -1) {
     line[read_size - 1] = '\0';
+    taosMemoryFree(pHistory->hist[pHistory->hend]);
     pHistory->hist[pHistory->hend] = strdup(line);
 
     pHistory->hend = (pHistory->hend + 1) % SHELL_MAX_HISTORY_SIZE;
@@ -755,12 +766,23 @@ void shellWriteHistory() {
   for (int32_t i = pHistory->hstart; i != pHistory->hend;) {
     if (pHistory->hist[i] != NULL) {
       taosFprintfFile(pFile, "%s\n", pHistory->hist[i]);
-      taosMemoryFreeClear(pHistory->hist[i]);
+      taosMemoryFree(pHistory->hist[i]);
+      pHistory->hist[i] = NULL;
     }
     i = (i + 1) % SHELL_MAX_HISTORY_SIZE;
   }
   taosFsyncFile(pFile);
   taosCloseFile(&pFile);
+}
+
+void shellCleanupHistory() {
+  SShellHistory *pHistory = &shell.history;
+  for (int32_t i = 0; i < SHELL_MAX_HISTORY_SIZE; ++i) {
+    if (pHistory->hist[i] != NULL) {
+      taosMemoryFree(pHistory->hist[i]);
+      pHistory->hist[i] = NULL;
+    }
+  }
 }
 
 void shellPrintError(TAOS_RES *tres, int64_t st) {
@@ -963,6 +985,7 @@ int32_t shellExecute() {
 
     taos_close(shell.conn);
     shellWriteHistory();
+    shellCleanupHistory();
     return 0;
   }
 
@@ -980,7 +1003,7 @@ int32_t shellExecute() {
 
   taosSetSignal(SIGINT, shellSigintHandler);
 
-  shellGetGrantInfo(shell.conn);
+  shellGetGrantInfo();
 
   while (1) {
     taosThreadCreate(&shell.pid, NULL, shellThreadLoop, shell.conn);
@@ -988,5 +1011,6 @@ int32_t shellExecute() {
     taosThreadClear(&shell.pid);
   }
 
+  shellCleanupHistory();
   return 0;
 }

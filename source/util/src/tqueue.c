@@ -26,6 +26,7 @@ typedef struct STaosQnode STaosQnode;
 typedef struct STaosQnode {
   STaosQnode *next;
   STaosQueue *queue;
+  int64_t     timestamp;
   int32_t     size;
   int8_t      itype;
   int8_t      reserved[3];
@@ -33,11 +34,11 @@ typedef struct STaosQnode {
 } STaosQnode;
 
 typedef struct STaosQueue {
-  STaosQnode *  head;
-  STaosQnode *  tail;
-  STaosQueue *  next;     // for queue set
-  STaosQset *   qset;     // for queue set
-  void *        ahandle;  // for queue set
+  STaosQnode   *head;
+  STaosQnode   *tail;
+  STaosQueue   *next;     // for queue set
+  STaosQset    *qset;     // for queue set
+  void         *ahandle;  // for queue set
   FItem         itemFp;
   FItems        itemsFp;
   TdThreadMutex mutex;
@@ -46,8 +47,8 @@ typedef struct STaosQueue {
 } STaosQueue;
 
 typedef struct STaosQset {
-  STaosQueue *  head;
-  STaosQueue *  current;
+  STaosQueue   *head;
+  STaosQueue   *current;
   TdThreadMutex mutex;
   tsem_t        sem;
   int32_t       numOfQueues;
@@ -85,7 +86,7 @@ void taosSetQueueFp(STaosQueue *queue, FItem itemFp, FItems itemsFp) {
 void taosCloseQueue(STaosQueue *queue) {
   if (queue == NULL) return;
   STaosQnode *pTemp;
-  STaosQset * qset;
+  STaosQset  *qset;
 
   taosThreadMutexLock(&queue->mutex);
   STaosQnode *pNode = queue->head;
@@ -144,6 +145,7 @@ void *taosAllocateQitem(int32_t size, EQItype itype) {
   STaosQnode *pNode = taosMemoryCalloc(1, sizeof(STaosQnode) + size);
   pNode->size = size;
   pNode->itype = itype;
+  pNode->timestamp = taosGetTimestampUs();
 
   if (pNode == NULL) {
     terrno = TSDB_CODE_OUT_OF_MEMORY;
@@ -162,7 +164,7 @@ void *taosAllocateQitem(int32_t size, EQItype itype) {
     uTrace("item:%p, node:%p is allocated", pNode->item, pNode);
   }
 
-  return (void *)pNode->item;
+  return pNode->item;
 }
 
 void taosFreeQitem(void *pItem) {
@@ -280,6 +282,8 @@ int32_t taosGetQitem(STaosQall *qall, void **ppItem) {
     *ppItem = pNode->item;
     num = 1;
     uTrace("item:%p is fetched", *ppItem);
+  } else {
+    *ppItem = NULL;
   }
 
   return num;
@@ -393,7 +397,7 @@ void taosRemoveFromQset(STaosQset *qset, STaosQueue *queue) {
 
 int32_t taosGetQueueNumber(STaosQset *qset) { return qset->numOfQueues; }
 
-int32_t taosReadQitemFromQset(STaosQset *qset, void **ppItem, void **ahandle, FItem *itemFp) {
+int32_t taosReadQitemFromQset(STaosQset *qset, void **ppItem, int64_t *ts, void **ahandle, FItem *itemFp) {
   STaosQnode *pNode = NULL;
   int32_t     code = 0;
 
@@ -415,6 +419,7 @@ int32_t taosReadQitemFromQset(STaosQset *qset, void **ppItem, void **ahandle, FI
       *ppItem = pNode->item;
       if (ahandle) *ahandle = queue->ahandle;
       if (itemFp) *itemFp = queue->itemFp;
+      if (ts) *ts = pNode->timestamp;
 
       queue->head = pNode->next;
       if (queue->head == NULL) queue->tail = NULL;

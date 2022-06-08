@@ -24,35 +24,39 @@ extern "C" {
 #endif
 
 typedef struct SMnodeMgmt {
-  SDnodeData   *pData;
-  SMnode       *pMnode;
-  SMsgCb        msgCb;
-  const char   *path;
-  const char   *name;
-  SSingleWorker queryWorker;
-  SSingleWorker readWorker;
-  SSingleWorker writeWorker;
-  SSingleWorker syncWorker;
-  SSingleWorker monitorWorker;
-  SReplica      replicas[TSDB_MAX_REPLICA];
-  int8_t        replica;
-  int8_t        selfIndex;
+  SDnodeData    *pData;
+  SMnode        *pMnode;
+  SMsgCb         msgCb;
+  const char    *path;
+  const char    *name;
+  SSingleWorker  queryWorker;
+  SSingleWorker  readWorker;
+  SSingleWorker  writeWorker;
+  SSingleWorker  syncWorker;
+  SSingleWorker  monitorWorker;
+  SReplica       replicas[TSDB_MAX_REPLICA];
+  int8_t         replica;
+  bool           stopped;
+  int32_t        refCount;
+  TdThreadRwlock lock;
 } SMnodeMgmt;
 
 // mmFile.c
 int32_t mmReadFile(SMnodeMgmt *pMgmt, bool *pDeployed);
-int32_t mmWriteFile(SMnodeMgmt *pMgmt, SDCreateMnodeReq *pReq, bool deployed);
+int32_t mmWriteFile(SMnodeMgmt *pMgmt, SDCreateMnodeReq *pMsg, bool deployed);
 
 // mmInt.c
-int32_t mmAlter(SMnodeMgmt *pMgmt, SDAlterMnodeReq *pReq);
+int32_t mmAcquire(SMnodeMgmt *pMgmt);
+void    mmRelease(SMnodeMgmt *pMgmt);
 
 // mmHandle.c
 SArray *mmGetMsgHandles();
 int32_t mmProcessCreateReq(const SMgmtInputOpt *pInput, SRpcMsg *pMsg);
 int32_t mmProcessDropReq(const SMgmtInputOpt *pInput, SRpcMsg *pMsg);
 int32_t mmProcessAlterReq(SMnodeMgmt *pMgmt, SRpcMsg *pMsg);
-int32_t mmProcessGetMonitorInfoReq(SMnodeMgmt *pMgmt, SRpcMsg *pReq);
-int32_t mmProcessGetLoadsReq(SMnodeMgmt *pMgmt, SRpcMsg *pReq);
+int32_t mmProcessGetMonitorInfoReq(SMnodeMgmt *pMgmt, SRpcMsg *pMsg);
+int32_t mmProcessGetLoadsReq(SMnodeMgmt *pMgmt, SRpcMsg *pMsg);
+int32_t mndPreprocessQueryMsg(SMnode * pMnode, SRpcMsg * pMsg);
 
 // mmWorker.c
 int32_t mmStartWorker(SMnodeMgmt *pMgmt);
@@ -62,10 +66,7 @@ int32_t mmPutNodeMsgToSyncQueue(SMnodeMgmt *pMgmt, SRpcMsg *pMsg);
 int32_t mmPutNodeMsgToReadQueue(SMnodeMgmt *pMgmt, SRpcMsg *pMsg);
 int32_t mmPutNodeMsgToQueryQueue(SMnodeMgmt *pMgmt, SRpcMsg *pMsg);
 int32_t mmPutNodeMsgToMonitorQueue(SMnodeMgmt *pMgmt, SRpcMsg *pMsg);
-int32_t mmPutRpcMsgToQueryQueue(SMnodeMgmt *pMgmt, SRpcMsg *pRpc);
-int32_t mmPutRpcMsgToReadQueue(SMnodeMgmt *pMgmt, SRpcMsg *pRpc);
-int32_t mmPutRpcMsgToWriteQueue(SMnodeMgmt *pMgmt, SRpcMsg *pRpc);
-int32_t mmPutRpcMsgToSyncQueue(SMnodeMgmt *pMgmt, SRpcMsg *pRpc);
+int32_t mmPutRpcMsgToQueue(SMnodeMgmt *pMgmt, EQueueType qtype, SRpcMsg *pRpc);
 
 #ifdef __cplusplus
 }

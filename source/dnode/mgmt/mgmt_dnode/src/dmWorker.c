@@ -19,7 +19,6 @@
 static void *dmStatusThreadFp(void *param) {
   SDnodeMgmt *pMgmt = param;
   int64_t     lastTime = taosGetTimestampMs();
-
   setThreadName("dnode-status");
 
   while (1) {
@@ -40,7 +39,6 @@ static void *dmStatusThreadFp(void *param) {
 static void *dmMonitorThreadFp(void *param) {
   SDnodeMgmt *pMgmt = param;
   int64_t     lastTime = taosGetTimestampMs();
-
   setThreadName("dnode-monitor");
 
   while (1) {
@@ -50,7 +48,7 @@ static void *dmMonitorThreadFp(void *param) {
     int64_t curTime = taosGetTimestampMs();
     float   interval = (curTime - lastTime) / 1000.0f;
     if (interval >= tsMonitorInterval) {
-      dmSendMonitorReport(pMgmt);
+      (*pMgmt->sendMonitorReportFp)();
       lastTime = curTime;
     }
   }
@@ -103,11 +101,9 @@ void dmStopMonitorThread(SDnodeMgmt *pMgmt) {
 static void dmProcessMgmtQueue(SQueueInfo *pInfo, SRpcMsg *pMsg) {
   SDnodeMgmt *pMgmt = pInfo->ahandle;
   int32_t     code = -1;
-  tmsg_t      msgType = pMsg->msgType;
-  bool        isRequest = msgType & 1u;
-  dTrace("msg:%p, will be processed in dnode-mgmt queue, type:%s", pMsg, TMSG_INFO(msgType));
+  dTrace("msg:%p, will be processed in dnode queue, type:%s", pMsg, TMSG_INFO(pMsg->msgType));
 
-  switch (msgType) {
+  switch (pMsg->msgType) {
     case TDMT_DND_CONFIG_DNODE:
       code = dmProcessConfigReq(pMgmt, pMsg);
       break;
@@ -149,18 +145,18 @@ static void dmProcessMgmtQueue(SQueueInfo *pInfo, SRpcMsg *pMsg) {
       break;
   }
 
-  if (isRequest) {
+  if (IsReq(pMsg)) {
     if (code != 0 && terrno != 0) code = terrno;
     SRpcMsg rsp = {
         .code = code,
-        .info = pMsg->info,
         .pCont = pMsg->info.rsp,
         .contLen = pMsg->info.rspLen,
+        .info = pMsg->info,
     };
     rpcSendResponse(&rsp);
   }
 
-  dTrace("msg:%p, is freed, result:0x%04x:%s", pMsg, code & 0XFFFF, tstrerror(code));
+  dTrace("msg:%p, is freed, code:0x%x", pMsg, code);
   rpcFreeCont(pMsg->pCont);
   taosFreeQitem(pMsg);
 }

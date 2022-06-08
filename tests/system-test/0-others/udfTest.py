@@ -1,7 +1,9 @@
+from distutils.log import error
 import taos
 import sys
 import time
 import os
+import platform
 
 from util.log import *
 from util.sql import *
@@ -13,7 +15,7 @@ class TDTestCase:
 
     def init(self, conn, logSql):
         tdLog.debug(f"start to excute {__file__}")
-        tdSql.init(conn.cursor())
+        tdSql.init(conn.cursor(), logSql)
 
     def getBuildPath(self):
         selfPath = os.path.dirname(os.path.realpath(__file__))
@@ -24,7 +26,7 @@ class TDTestCase:
             projPath = selfPath[:selfPath.find("tests")]
 
         for root, dirs, files in os.walk(projPath):
-            if ("taosd" in files):
+            if ("taosd" in files or "taosd.exe" in files):
                 rootRealPath = os.path.dirname(os.path.realpath(root))
                 if ("packaging" not in rootRealPath):
                     buildPath = root[:len(root) - len("/build/bin")]
@@ -40,15 +42,25 @@ class TDTestCase:
             projPath = selfPath[:selfPath.find("tests")]
         print(projPath)
 
-        libudf1 = subprocess.Popen('find %s -name "libudf1.so"|grep lib|head -n1'%projPath , shell=True, stdout=subprocess.PIPE,stderr=subprocess.STDOUT).stdout.read().decode("utf-8")
-        libudf2 = subprocess.Popen('find %s -name "libudf2.so"|grep lib|head -n1'%projPath , shell=True, stdout=subprocess.PIPE,stderr=subprocess.STDOUT).stdout.read().decode("utf-8")
-        os.system("mkdir /tmp/udf/")
-        os.system("sudo cp %s /tmp/udf/ "%libudf1.replace("\n" ,""))
-        os.system("sudo cp  %s /tmp/udf/ "%libudf2.replace("\n" ,""))
+        if platform.system().lower() == 'windows':
+            self.libudf1 = subprocess.Popen('(for /r %s %%i in ("udf1.d*") do @echo %%i)|grep lib|head -n1'%projPath , shell=True, stdout=subprocess.PIPE,stderr=subprocess.STDOUT).stdout.read().decode("utf-8")
+            self.libudf2 = subprocess.Popen('(for /r %s %%i in ("udf2.d*") do @echo %%i)|grep lib|head -n1'%projPath , shell=True, stdout=subprocess.PIPE,stderr=subprocess.STDOUT).stdout.read().decode("utf-8")
+            if (not tdDnodes.dnodes[0].remoteIP == ""):
+                tdDnodes.dnodes[0].remote_conn.get(tdDnodes.dnodes[0].config["path"]+'/debug/build/lib/libudf1.so',projPath+"\\debug\\build\\lib\\")
+                tdDnodes.dnodes[0].remote_conn.get(tdDnodes.dnodes[0].config["path"]+'/debug/build/lib/libudf2.so',projPath+"\\debug\\build\\lib\\")
+                self.libudf1 = self.libudf1.replace('udf1.dll','libudf1.so')
+                self.libudf2 = self.libudf2.replace('udf2.dll','libudf2.so')
+        else:
+            self.libudf1 = subprocess.Popen('find %s -name "libudf1.so"|grep lib|head -n1'%projPath , shell=True, stdout=subprocess.PIPE,stderr=subprocess.STDOUT).stdout.read().decode("utf-8")
+            self.libudf2 = subprocess.Popen('find %s -name "libudf2.so"|grep lib|head -n1'%projPath , shell=True, stdout=subprocess.PIPE,stderr=subprocess.STDOUT).stdout.read().decode("utf-8")
+        self.libudf1 = self.libudf1.replace('\r','').replace('\n','')
+        self.libudf2 = self.libudf2.replace('\r','').replace('\n','')
 
 
     def prepare_data(self):
         
+        tdSql.execute("drop database if exists db ")
+        tdSql.execute("create database if not exists db  days 300")
         tdSql.execute("use db")
         tdSql.execute(
         '''create table stb1
@@ -117,16 +129,27 @@ class TDTestCase:
             '''
         )
 
+        # udf functions with join
+        ts_start = 1652517451000
+        tdSql.execute("create stable st (ts timestamp , c1 int , c2 int ,c3 double ,c4 double ) tags(ind int)")
+        tdSql.execute("create table sub1 using st tags(1)")
+        tdSql.execute("create table sub2 using st tags(2)")
+
+        for i in range(10):
+            ts = ts_start + i *1000
+            tdSql.execute(" insert into sub1 values({} , {},{},{},{})".format(ts,i ,i*10,i*100.0,i*1000.0))
+            tdSql.execute(" insert into sub2 values({} , {},{},{},{})".format(ts,i ,i*10,i*100.0,i*1000.0))
+
 
     def create_udf_function(self):
 
-        for i in range(10):
+        for i in range(5):
             # create  scalar functions
-            tdSql.execute("create function udf1 as '/tmp/udf/libudf1.so' outputtype int bufSize 8;")
+            tdSql.execute("create function udf1 as '%s' outputtype int bufSize 8;"%self.libudf1)
 
             # create aggregate functions
 
-            tdSql.execute("create aggregate function udf2 as '/tmp/udf/libudf2.so' outputtype double bufSize 8;")
+            tdSql.execute("create aggregate function udf2 as '%s' outputtype double bufSize 8;"%self.libudf2)
             
             functions = tdSql.getResult("show functions")
             function_nums = len(functions)
@@ -147,11 +170,11 @@ class TDTestCase:
                 tdLog.info("drop two udf functions success ")
 
         # create  scalar functions
-        tdSql.execute("create function udf1 as '/tmp/udf/libudf1.so' outputtype int bufSize 8;")
+        tdSql.execute("create function udf1 as '%s' outputtype int bufSize 8;"%self.libudf1)
 
         # create aggregate functions
 
-        tdSql.execute("create aggregate function udf2 as '/tmp/udf/libudf2.so' outputtype double bufSize 8;")
+        tdSql.execute("create aggregate function udf2 as '%s' outputtype double bufSize 8;"%self.libudf2)
         
         functions = tdSql.getResult("show functions")
         function_nums = len(functions)
@@ -329,14 +352,14 @@ class TDTestCase:
 
         # # bug need fix 
 
-        tdSql.query("select udf1(num1) , csum(num1) from tb;")
-        tdSql.checkRows(9)
-        tdSql.query("select ceil(num1) , csum(num1) from tb;")
-        tdSql.checkRows(9)
-        tdSql.query("select udf1(c1) , csum(c1) from stb1;")
-        tdSql.checkRows(22)
-        tdSql.query("select floor(c1) , csum(c1) from stb1;")
-        tdSql.checkRows(22)
+        #tdSql.query("select udf1(num1) , csum(num1) from tb;")
+        #tdSql.checkRows(9)
+        #tdSql.query("select ceil(num1) , csum(num1) from tb;")
+        #tdSql.checkRows(9)
+        #tdSql.query("select udf1(c1) , csum(c1) from stb1;")
+        #tdSql.checkRows(22)
+        #tdSql.query("select floor(c1) , csum(c1) from stb1;")
+        #tdSql.checkRows(22)
 
         # stable  with compute functions
         tdSql.query("select udf1(c1) , abs(c1) from stb1;")
@@ -378,17 +401,6 @@ class TDTestCase:
         tdSql.checkData(0,1,88)
         tdSql.checkData(0,2,-99.990000000)
         tdSql.checkData(0,3,88)
-
-        # udf functions with join
-        ts_start = 1652517451000
-        tdSql.execute("create stable st (ts timestamp , c1 int , c2 int ,c3 double ,c4 double ) tags(ind int)")
-        tdSql.execute("create table sub1 using st tags(1)")
-        tdSql.execute("create table sub2 using st tags(2)")
-
-        for i in range(10):
-            ts = ts_start + i *1000
-            tdSql.execute(" insert into sub1 values({} , {},{},{},{})".format(ts,i ,i*10,i*100.0,i*1000.0))
-            tdSql.execute(" insert into sub2 values({} , {},{},{},{})".format(ts,i ,i*10,i*100.0,i*1000.0))
         
         tdSql.query("select sub1.c1, sub2.c2 from sub1, sub2 where sub1.ts=sub2.ts and sub1.c1 is not null")
         tdSql.checkData(0,0,0)
@@ -468,10 +480,103 @@ class TDTestCase:
         tdSql.checkData(0,0,169.661427555)
         tdSql.checkData(0,1,169.661427555)
 
+    def try_query_sql(self):
+        udf1_sqls = [ 
+        "select num1 , udf1(num1) ,num2 ,udf1(num2),num3 ,udf1(num3),num4 ,udf1(num4) from tb" ,
+        "select c1 , udf1(c1) ,c2 ,udf1(c2), c3 ,udf1(c3), c4 ,udf1(c4) from stb1 order by c1" ,
+        "select udf1(num1) , max(num1) from tb;" ,
+        "select udf1(num1) , min(num1) from tb;" ,
+        #"select udf1(num1) , top(num1,1) from tb;" ,
+        #"select udf1(num1) , bottom(num1,1) from tb;" ,
+        "select udf1(c1) , max(c1) from stb1;" ,
+        "select udf1(c1) , min(c1) from stb1;" ,
+        #"select udf1(c1) , top(c1 ,1) from stb1;" ,
+        #"select udf1(c1) , bottom(c1,1) from stb1;" ,
+        "select udf1(num1) , abs(num1) from tb;" ,
+        #"select udf1(num1) , csum(num1) from tb;" ,
+        #"select udf1(c1) , csum(c1) from stb1;" ,
+        "select udf1(c1) , abs(c1) from stb1;" ,
+        "select abs(udf1(c1)) , abs(ceil(c1)) from stb1 order by ts;" ,
+        "select abs(udf1(c1)) , abs(ceil(c1)) from ct1 order by ts;" ,
+        "select abs(udf1(c1)) , abs(ceil(c1)) from stb1 where c1 is null  order by ts;" ,
+        "select c1 ,udf1(c1) , c6 ,udf1(c6) from stb1 where c1 > 8  order by ts" ,
+        "select udf1(sub1.c1), udf1(sub2.c2) from sub1, sub2 where sub1.ts=sub2.ts and sub1.c1 is not null" ,
+        "select sub1.c1 , udf1(sub1.c1), sub2.c2 ,udf1(sub2.c2) from sub1, sub2 where sub1.ts=sub2.ts and sub1.c1 is not null" ,
+        "select udf1(c1) from ct1 group by c1" ,
+        "select udf1(c1) from stb1 group by c1" ,
+        "select c1,c2, udf1(c1,c2) from ct1 group by c1,c2" ,
+        "select c1,c2, udf1(c1,c2) from stb1 group by c1,c2" ,
+        "select num1,num2,num3,udf1(num1,num2,num3) from tb" ,
+        "select c1,c6,udf1(c1,c6) from stb1 order by ts" ,
+        "select abs(udf1(c1,c6,c1,c6)) , abs(ceil(c1)) from stb1 where c1 is not null  order by ts;" 
+        ]
+        udf2_sqls = ["select udf2(sub1.c1), udf2(sub2.c2) from sub1, sub2 where sub1.ts=sub2.ts and sub1.c1 is not null" ,
+        "select udf2(c1) from stb1 group by 1-udf1(c1)" ,
+        "select udf2(num1) ,udf2(num2), udf2(num3) from tb" ,
+        "select udf2(num1)+100 ,udf2(num2)-100, udf2(num3)*100 ,udf2(num3)/100 from tb" ,
+        "select udf2(c1) ,udf2(c6) from stb1 " ,
+        "select udf2(c1)+100 ,udf2(c6)-100 ,udf2(c1)*100 ,udf2(c6)/100 from stb1 " ,
+        "select udf2(c1+100) ,udf2(c6-100) ,udf2(c1*100) ,udf2(c6/100) from ct1" ,
+        "select udf2(c1+100) ,udf2(c6-100) ,udf2(c1*100) ,udf2(c6/100) from stb1 " ,
+        "select udf2(c1) from ct1 group by c1" ,
+        "select udf2(c1) from stb1 group by c1" ,
+        "select c1,c2, udf2(c1,c6) from ct1 group by c1,c2" ,
+        "select c1,c2, udf2(c1,c6) from stb1 group by c1,c2" ,
+        "select udf2(c1) from stb1 group by udf1(c1)" ,
+        "select udf2(c1) from stb1 group by floor(c1)" ,
+        "select udf2(c1) from stb1 group by floor(c1) order by udf2(c1)" ,
+    
+        "select udf2(sub1.c1 ,sub1.c2), udf2(sub2.c2 ,sub2.c1) from sub1, sub2 where sub1.ts=sub2.ts and sub1.c1 is not null" ,
+        "select udf2(sub1.c1 ,sub1.c2), udf2(sub2.c2 ,sub2.c1) from sub1, sub2 where sub1.ts=sub2.ts and sub1.c1 is not null" ,
+        "select udf2(sub1.c1 ,sub1.c2), udf2(sub2.c2 ,sub2.c1) from sub1, sub2 where sub1.ts=sub2.ts and sub1.c1 is not null" ,
+        "select udf2(sub1.c1 ,sub1.c2), udf2(sub2.c2 ,sub2.c1) from sub1, sub2 where sub1.ts=sub2.ts and sub1.c1 is not null"]
+
+        return udf1_sqls ,udf2_sqls
+
+
 
     def unexpected_create(self):
+
+        tdLog.info(" create function with out bufsize ")
+        tdSql.query("drop function udf1 ")
+        tdSql.query("drop function udf2 ")
+
+        # create function without buffer
+        tdSql.execute("create function udf1 as '%s' outputtype int"%self.libudf1)
+        tdSql.execute("create aggregate function udf2 as '%s' outputtype double"%self.libudf2)
+        udf1_sqls ,udf2_sqls = self.try_query_sql()
+
+        for scalar_sql in udf1_sqls:
+            tdSql.query(scalar_sql)
+        for aggregate_sql in udf2_sqls:
+            tdSql.error(aggregate_sql)
+
+        # create function without aggregate 
+
+        tdLog.info(" create function with out aggregate ")
+        tdSql.query("drop function udf1 ")
+        tdSql.query("drop function udf2 ")
+
+        # create function without buffer
+        tdSql.execute("create  aggregate function udf1 as '%s' outputtype int bufSize 8 "%self.libudf1)
+        tdSql.execute("create  function udf2 as '%s' outputtype double bufSize 8"%self.libudf2)
+        udf1_sqls ,udf2_sqls = self.try_query_sql()
+
+        for scalar_sql in udf1_sqls:
+            tdSql.error(scalar_sql)
+        for aggregate_sql in udf2_sqls:
+            tdSql.error(aggregate_sql)
+
+        tdSql.execute(" create function db as '%s' outputtype int bufSize 8 "%self.libudf1)
+        tdSql.execute(" create aggregate function test as '%s' outputtype int bufSize 8 "%self.libudf1)
+        tdSql.error(" select db(c1) from stb1 ")
+        tdSql.error(" select db(c1,c6), db(c6) from stb1 ")
+        tdSql.error(" select db(num1,num2), db(num1) from tb ")
+        tdSql.error(" select test(c1) from stb1 ")
+        tdSql.error(" select test(c1,c6), test(c6) from stb1 ")
+        tdSql.error(" select test(num1,num2), test(num1) from tb ")
         
-        tdSql.query("select udf2(sub1.c1 ,sub1.c2), udf2(sub2.c2 ,sub2.c1) from sub1, sub2 where sub1.ts=sub2.ts and sub1.c1 is not null")
+        
 
     def loop_kill_udfd(self):
 
@@ -484,7 +589,7 @@ class TDTestCase:
         cfgPath = buildPath + "/../sim/dnode1/cfg"
         udfdPath = buildPath +'/build/bin/udfd'
 
-        for i in range(5):
+        for i in range(3):
 
             tdLog.info(" loop restart udfd  %d_th" % i)
 
@@ -492,7 +597,7 @@ class TDTestCase:
             tdSql.checkData(0,0,169.661427555)
             tdSql.checkData(0,1,169.661427555)
             # stop udfd cmds 
-            get_processID = "ps -ef | grep -w udfd | grep 'root' | grep -v grep| grep -v defunct | awk '{print $2}'"
+            get_processID = "ps -ef | grep -w udfd | grep -v grep| grep -v defunct | awk '{print $2}'"
             processID = subprocess.check_output(get_processID, shell=True).decode("utf-8")
             stop_udfd = " kill -9 %s" % processID
             os.system(stop_udfd)
@@ -507,11 +612,27 @@ class TDTestCase:
             # start_udfd = "nohup " + udfdPath +'-c' +cfgPath +" > /dev/null 2>&1 &"
             # tdLog.info("start udfd : %s " % start_udfd)
 
-    
+    def test_function_name(self):
+        tdLog.info(" create function name is not build_in functions ")
+        tdSql.execute(" drop function udf1 ")
+        tdSql.execute(" drop function udf2 ")
+        tdSql.error("create function max as '%s' outputtype int bufSize 8"%self.libudf1)
+        tdSql.error("create aggregate function sum as '%s' outputtype double bufSize 8"%self.libudf2)
+        tdSql.error("create function max as '%s' outputtype int bufSize 8"%self.libudf1)
+        tdSql.error("create aggregate function sum as '%s' outputtype double bufSize 8"%self.libudf2)
+        tdSql.error("create aggregate function tbname as '%s' outputtype double bufSize 8"%self.libudf2)
+        tdSql.error("create aggregate function function as '%s' outputtype double bufSize 8"%self.libudf2)
+        tdSql.error("create aggregate function stable as '%s' outputtype double bufSize 8"%self.libudf2)
+        tdSql.error("create aggregate function union as '%s' outputtype double bufSize 8"%self.libudf2)
+        tdSql.error("create aggregate function 123 as '%s' outputtype double bufSize 8"%self.libudf2)
+        tdSql.error("create aggregate function 123db as '%s' outputtype double bufSize 8"%self.libudf2)
+        tdSql.error("create aggregate function mnode as '%s' outputtype double bufSize 8"%self.libudf2)
+
     def restart_taosd_query_udf(self):
 
+        self.create_udf_function()
+
         for i in range(5):
-            time.sleep(5)
             tdLog.info("  this is %d_th restart taosd " %i)
             tdSql.execute("use db ")
             tdSql.query("select count(*) from stb1")
@@ -520,21 +641,25 @@ class TDTestCase:
             tdSql.checkData(0,0,169.661427555)
             tdSql.checkData(0,1,169.661427555)
             tdDnodes.stop(1)
-            time.sleep(2)
             tdDnodes.start(1)
-            time.sleep(5)
-            
+            time.sleep(2)
             
             
     def run(self):  # sourcery skip: extract-duplicate-method, remove-redundant-fstring
-        tdSql.prepare()
         
+        print(" env is ok for all ") 
         self.prepare_udf_so()
         self.prepare_data()
         self.create_udf_function()
         self.basic_udf_query()
         self.loop_kill_udfd()
-        # self.restart_taosd_query_udf()
+        tdSql.execute(" drop function udf1 ")
+        tdSql.execute(" drop function udf2 ")
+        self.create_udf_function()
+        time.sleep(2)
+        self.basic_udf_query()
+        self.test_function_name()
+        
 
     def stop(self):
         tdSql.close()

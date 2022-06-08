@@ -34,6 +34,7 @@
 
 #include "dnode.h"
 #include "mnode.h"
+#include "qnode.h"
 #include "monitor.h"
 #include "sync.h"
 #include "wal.h"
@@ -89,21 +90,24 @@ typedef enum {
 
 typedef int32_t (*ProcessCreateNodeFp)(EDndNodeType ntype, SRpcMsg *pMsg);
 typedef int32_t (*ProcessDropNodeFp)(EDndNodeType ntype, SRpcMsg *pMsg);
-typedef bool (*IsNodeRequiredFp)(EDndNodeType ntype);
+typedef void (*SendMonitorReportFp)();
+typedef void (*GetVnodeLoadsFp)(SMonVloadInfo *pInfo);
+typedef void (*GetMnodeLoadsFp)(SMonMloadInfo *pInfo);
+typedef void (*GetQnodeLoadsFp)(SQnodeLoad *pInfo);
 
 typedef struct {
-  int32_t      dnodeId;
-  int64_t      clusterId;
-  int64_t      dnodeVer;
-  int64_t      updateTime;
-  int64_t      rebootTime;
-  bool         dropped;
-  bool         stopped;
-  SEpSet       mnodeEps;
-  SArray      *dnodeEps;
-  SHashObj    *dnodeHash;
-  SRWLatch     latch;
-  SMsgCb       msgCb;
+  int32_t        dnodeId;
+  int64_t        clusterId;
+  int64_t        dnodeVer;
+  int64_t        updateTime;
+  int64_t        rebootTime;
+  bool           dropped;
+  bool           stopped;
+  SEpSet         mnodeEps;
+  SArray        *dnodeEps;
+  SHashObj      *dnodeHash;
+  TdThreadRwlock lock;
+  SMsgCb         msgCb;
 } SDnodeData;
 
 typedef struct {
@@ -113,7 +117,10 @@ typedef struct {
   SMsgCb              msgCb;
   ProcessCreateNodeFp processCreateNodeFp;
   ProcessDropNodeFp   processDropNodeFp;
-  IsNodeRequiredFp    isNodeRequiredFp;
+  SendMonitorReportFp sendMonitorReportFp;
+  GetVnodeLoadsFp     getVnodeLoadsFp;
+  GetMnodeLoadsFp     getMnodeLoadsFp;
+  GetQnodeLoadsFp     getQnodeLoadsFp;
 } SMgmtInputOpt;
 
 typedef struct {
@@ -169,6 +176,7 @@ int32_t dmReadEps(SDnodeData *pData);
 int32_t dmWriteEps(SDnodeData *pData);
 void    dmUpdateEps(SDnodeData *pData, SArray *pDnodeEps);
 void    dmGetMnodeEpSet(SDnodeData *pData, SEpSet *pEpSet);
+void    dmGetMnodeEpSetForRedirect(SDnodeData *pData, SRpcMsg *pMsg, SEpSet *pEpSet);
 void    dmSetMnodeEpSet(SDnodeData *pData, SEpSet *pEpSet);
 
 #ifdef __cplusplus

@@ -28,18 +28,6 @@ typedef struct SCompSupporter {
   int32_t           order;
 } SCompSupporter;
 
-int32_t getRowNumForMultioutput(STaskAttr* pQueryAttr, bool topBottomQuery, bool stable) {
-  if (pQueryAttr && (!stable)) {
-    for (int16_t i = 0; i < pQueryAttr->numOfOutput; ++i) {
-//      if (pQueryAttr->pExpr1[i].base. == FUNCTION_TOP || pQueryAttr->pExpr1[i].base.functionId == FUNCTION_BOTTOM) {
-//        return (int32_t)pQueryAttr->pExpr1[i].base.param[0].i;
-//      }
-    }
-  }
-
-  return 1;
-}
-
 int32_t getOutputInterResultBufSize(STaskAttr* pQueryAttr) {
   int32_t size = 0;
 
@@ -101,26 +89,8 @@ void resetResultRowInfo(STaskRuntimeEnv *pRuntimeEnv, SResultRowInfo *pResultRow
   pResultRowInfo->size     = 0;
 }
 
-int32_t numOfClosedResultRows(SResultRowInfo *pResultRowInfo) {
-  int32_t i = 0;
-//  while (i < pResultRowInfo->size && pResultRowInfo->pResult[i]->closed) {
-//    ++i;
-//  }
-  
-  return i;
-}
-
 void closeAllResultRows(SResultRowInfo *pResultRowInfo) {
-  assert(pResultRowInfo->size >= 0 && pResultRowInfo->capacity >= pResultRowInfo->size);
-  
-  for (int32_t i = 0; i < pResultRowInfo->size; ++i) {
-//    SResultRow* pRow = pResultRowInfo->pResult[i];
-//    if (pRow->closed) {
-//      continue;
-//    }
-    
-//    pRow->closed = true;
-  }
+// do nothing
 }
 
 bool isResultRowClosed(SResultRow* pRow) {
@@ -131,37 +101,8 @@ void closeResultRow(SResultRow* pResultRow) {
   pResultRow->closed = true;
 }
 
-void clearResultRow(STaskRuntimeEnv *pRuntimeEnv, SResultRow *pResultRow) {
-  if (pResultRow == NULL) {
-    return;
-  }
-
-  // the result does not put into the SDiskbasedBuf, ignore it.
-  if (pResultRow->pageId >= 0) {
-    SFilePage *page = getBufPage(pRuntimeEnv->pResultBuf, pResultRow->pageId);
-
-    int16_t offset = 0;
-    for (int32_t i = 0; i < pRuntimeEnv->pQueryAttr->numOfOutput; ++i) {
-      struct SResultRowEntryInfo *pEntryInfo = NULL;//pResultRow->pEntryInfo[i];
-
-      int16_t size = pRuntimeEnv->pQueryAttr->pExpr1[i].base.resSchema.bytes;
-      char * s = getPosInResultPage(pRuntimeEnv->pQueryAttr, page, pResultRow->offset, offset);
-      memset(s, 0, size);
-
-      offset += size;
-      cleanupResultRowEntry(pEntryInfo);
-    }
-  }
-
-  pResultRow->numOfRows = 0;
-  pResultRow->pageId = -1;
-  pResultRow->offset = -1;
-  pResultRow->closed = false;
-  pResultRow->win = TSWINDOW_INITIALIZER;
-}
-
 // TODO refactor: use macro
-SResultRowEntryInfo* getResultCell(const SResultRow* pRow, int32_t index, int32_t* offset) {
+SResultRowEntryInfo* getResultCell(const SResultRow* pRow, int32_t index, const int32_t* offset) {
   assert(index >= 0 && offset != NULL);
   return (SResultRowEntryInfo*)((char*) pRow->pEntryInfo + offset[index]);
 }
@@ -239,7 +180,7 @@ void initGroupedResultInfo(SGroupResInfo* pGroupResInfo, SHashObj* pHashmap, int
 
 void initMultiResInfoFromArrayList(SGroupResInfo* pGroupResInfo, SArray* pArrayList) {
   if (pGroupResInfo->pRows != NULL) {
-    taosArrayDestroy(pGroupResInfo->pRows);
+    taosArrayDestroyP(pGroupResInfo->pRows, taosMemoryFree);
   }
 
   pGroupResInfo->pRows = pArrayList;
@@ -247,24 +188,12 @@ void initMultiResInfoFromArrayList(SGroupResInfo* pGroupResInfo, SArray* pArrayL
   ASSERT(pGroupResInfo->index <= getNumOfTotalRes(pGroupResInfo));
 }
 
-bool hasRemainDataInCurrentGroup(SGroupResInfo* pGroupResInfo) {
+bool hashRemainDataInGroupInfo(SGroupResInfo* pGroupResInfo) {
   if (pGroupResInfo->pRows == NULL) {
     return false;
   }
 
   return pGroupResInfo->index < taosArrayGetSize(pGroupResInfo->pRows);
-}
-
-bool hasRemainData(SGroupResInfo* pGroupResInfo) {
-  if (hasRemainDataInCurrentGroup(pGroupResInfo)) {
-    return true;
-  }
-
-  return pGroupResInfo->currentGroup < pGroupResInfo->totalGroup;
-}
-
-bool incNextGroup(SGroupResInfo* pGroupResInfo) {
-  return (++pGroupResInfo->currentGroup) < pGroupResInfo->totalGroup;
 }
 
 int32_t getNumOfTotalRes(SGroupResInfo* pGroupResInfo) {
@@ -274,32 +203,6 @@ int32_t getNumOfTotalRes(SGroupResInfo* pGroupResInfo) {
   }
 
   return (int32_t) taosArrayGetSize(pGroupResInfo->pRows);
-}
-
-static int64_t getNumOfResultWindowRes(STaskRuntimeEnv* pRuntimeEnv, SResultRowPosition *pos, int32_t* rowCellInfoOffset) {
-  STaskAttr* pQueryAttr = pRuntimeEnv->pQueryAttr;
-  ASSERT(0);
-
-  for (int32_t j = 0; j < pQueryAttr->numOfOutput; ++j) {
-    int32_t functionId = 0;//pQueryAttr->pExpr1[j].base.functionId;
-
-    /*
-     * ts, tag, tagprj function can not decide the output number of current query
-     * the number of output result is decided by main output
-     */
-    if (functionId == FUNCTION_TS || functionId == FUNCTION_TAG || functionId == FUNCTION_TAGPRJ) {
-      continue;
-    }
-
-//    SResultRowEntryInfo *pResultInfo = getResultCell(pResultRow, j, rowCellInfoOffset);
-//    assert(pResultInfo != NULL);
-//
-//    if (pResultInfo->numOfRes > 0) {
-//      return pResultInfo->numOfRes;
-//    }
-  }
-
-  return 0;
 }
 
 static int32_t tableResultComparFn(const void *pLeft, const void *pRight, void *param) {
@@ -387,11 +290,6 @@ void orderTheResultRows(STaskRuntimeEnv* pRuntimeEnv) {
 }
 
 static int32_t mergeIntoGroupResultImplRv(STaskRuntimeEnv *pRuntimeEnv, SGroupResInfo* pGroupResInfo, uint64_t groupId, int32_t* rowCellInfoOffset) {
-  if (!pGroupResInfo->ordered) {
-    orderTheResultRows(pRuntimeEnv);
-    pGroupResInfo->ordered = true;
-  }
-
   if (pGroupResInfo->pRows == NULL) {
     pGroupResInfo->pRows = taosArrayInit(100, POINTER_BYTES);
   }
@@ -403,7 +301,8 @@ static int32_t mergeIntoGroupResultImplRv(STaskRuntimeEnv *pRuntimeEnv, SGroupRe
       break;
     }
 
-    int64_t num = getNumOfResultWindowRes(pRuntimeEnv, &pResultRowCell->pos, rowCellInfoOffset);
+
+    int64_t num = 0;//getNumOfResultWindowRes(pRuntimeEnv, &pResultRowCell->pos, rowCellInfoOffset);
     if (num <= 0) {
       continue;
     }

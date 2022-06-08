@@ -17,9 +17,9 @@
 #include "dmMgmt.h"
 #include "qworker.h"
 
-#define INTERNAL_USER   "_dnd"
-#define INTERNAL_CKEY   "_key"
-#define INTERNAL_SECRET "_pwd"
+static void dmSendRedirectRsp(SRpcMsg *pMsg, const SEpSet *pNewEpSet);
+static void dmSendRsp(SRpcMsg *pMsg);
+static void dmBuildMnodeRedirectRsp(SDnode *pDnode, SRpcMsg *pMsg);
 
 static inline int32_t dmBuildNodeMsg(SRpcMsg *pMsg, SRpcMsg *pRpc) {
   SRpcConnInfo connInfo = {0};
@@ -43,8 +43,8 @@ int32_t dmProcessNodeMsg(SMgmtWrapper *pWrapper, SRpcMsg *pMsg) {
     return -1;
   }
 
+  dTrace("msg:%p, will be processed by %s", pMsg, pWrapper->name);
   pMsg->info.wrapper = pWrapper;
-  dTrace("msg:%p, will be processed by %s, handle:%p", pMsg, pWrapper->name, pMsg->info.handle);
   return (*msgFp)(pWrapper->pMgmt, pMsg);
 }
 
@@ -52,46 +52,41 @@ static void dmProcessRpcMsg(SDnode *pDnode, SRpcMsg *pRpc, SEpSet *pEpSet) {
   SDnodeTrans  *pTrans = &pDnode->trans;
   int32_t       code = -1;
   SRpcMsg      *pMsg = NULL;
-  bool          needRelease = false;
-  SDnodeHandle *pHandle = &pTrans->msgHandles[TMSG_INDEX(pRpc->msgType)];
   SMgmtWrapper *pWrapper = NULL;
+  SDnodeHandle *pHandle = &pTrans->msgHandles[TMSG_INDEX(pRpc->msgType)];
 
-  dTrace("msg:%s is received, handle:%p cont:%p len:%d code:0x%04x app:%p refId:%" PRId64, TMSG_INFO(pRpc->msgType),
-         pRpc->info.handle, pRpc->pCont, pRpc->contLen, pRpc->code, pRpc->info.ahandle, pRpc->info.refId);
-  pRpc->info.noResp = 0;
-  pRpc->info.persistHandle = 0;
-  pRpc->info.wrapper = NULL;
-  pRpc->info.node = NULL;
-  pRpc->info.rsp = NULL;
-  pRpc->info.rspLen = 0;
+  dTrace("msg:%s is received, handle:%p len:%d code:0x%x app:%p refId:%" PRId64, TMSG_INFO(pRpc->msgType),
+         pRpc->info.handle, pRpc->contLen, pRpc->code, pRpc->info.ahandle, pRpc->info.refId);
 
   if (pRpc->msgType == TDMT_DND_NET_TEST) {
     dmProcessNetTestReq(pDnode, pRpc);
-    goto _OVER_JUST_FREE;
+    return;
   } else if (pRpc->msgType == TDMT_MND_SYSTABLE_RETRIEVE_RSP || pRpc->msgType == TDMT_VND_FETCH_RSP) {
-    qWorkerProcessFetchRsp(NULL, NULL, pRpc);
-    goto _OVER_JUST_FREE;
+    qWorkerProcessFetchRsp(NULL, NULL, pRpc, 0);
+    return;
+  } else if (pRpc->msgType == TDMT_MND_STATUS_RSP && pEpSet != NULL) {
+    dmSetMnodeEpSet(&pDnode->data, pEpSet);
   } else {
   }
 
   if (pDnode->status != DND_STAT_RUNNING) {
     if (pRpc->msgType == TDMT_DND_SERVER_STATUS) {
       dmProcessServerStartupStatus(pDnode, pRpc);
-      goto _OVER_JUST_FREE;
+      return;
     } else {
       terrno = TSDB_CODE_APP_NOT_READY;
-      goto _OVER_RSP_FREE;
+      goto _OVER;
     }
   }
 
   if (IsReq(pRpc) && pRpc->pCont == NULL) {
     terrno = TSDB_CODE_INVALID_MSG_LEN;
-    goto _OVER_RSP_FREE;
+    goto _OVER;
   }
 
   if (pHandle->defaultNtype == NODE_END) {
     terrno = TSDB_CODE_MSG_NOT_PROCESSED;
-    goto _OVER_RSP_FREE;
+    goto _OVER;
   } else {
     pWrapper = &pDnode->wrappers[pHandle->defaultNtype];
     if (pHandle->needCheckVgId) {
@@ -100,21 +95,23 @@ static void dmProcessRpcMsg(SDnode *pDnode, SRpcMsg *pRpc, SEpSet *pEpSet) {
         int32_t   vgId = ntohl(pHead->vgId);
         if (vgId == QNODE_HANDLE) {
           pWrapper = &pDnode->wrappers[QNODE];
+        } else if (vgId == SNODE_HANDLE) {
+          pWrapper = &pDnode->wrappers[SNODE];
         } else if (vgId == MNODE_HANDLE) {
           pWrapper = &pDnode->wrappers[MNODE];
         } else {
         }
       } else {
         terrno = TSDB_CODE_INVALID_MSG_LEN;
-        goto _OVER_RSP_FREE;
+        goto _OVER;
       }
     }
   }
 
   if (dmMarkWrapper(pWrapper) != 0) {
-    goto _OVER_RSP_FREE;
+    pWrapper = NULL;
+    goto _OVER;
   } else {
-    needRelease = true;
     pRpc->info.wrapper = pWrapper;
   }
 
@@ -122,6 +119,7 @@ static void dmProcessRpcMsg(SDnode *pDnode, SRpcMsg *pRpc, SEpSet *pEpSet) {
   if (pMsg == NULL) {
     goto _OVER;
   }
+  dTrace("msg:%p, is created, type:%s", pMsg, TMSG_INFO(pRpc->msgType));
 
   if (dmBuildNodeMsg(pMsg, pRpc) != 0) {
     goto _OVER;
@@ -134,44 +132,34 @@ static void dmProcessRpcMsg(SDnode *pDnode, SRpcMsg *pRpc, SEpSet *pEpSet) {
   }
 
 _OVER:
-  if (code == 0) {
-    if (pWrapper != NULL && InParentProc(pWrapper)) {
-      dTrace("msg:%p, is freed after push to cqueue", pMsg);
-      taosFreeQitem(pMsg);
-      rpcFreeCont(pRpc->pCont);
-    }
-  } else {
-    dError("msg:%p, failed to process since %s", pMsg, terrstr());
+  if (code != 0) {
+    dTrace("failed to process msg:%p since %s, handle:%p", pMsg, terrstr(), pRpc->info.handle);
+
     if (terrno != 0) code = terrno;
 
     if (IsReq(pRpc)) {
-      if (code == TSDB_CODE_NODE_NOT_DEPLOYED || code == TSDB_CODE_NODE_OFFLINE) {
-        if (pRpc->msgType > TDMT_MND_MSG && pRpc->msgType < TDMT_VND_MSG) {
-          code = TSDB_CODE_NODE_REDIRECT;
-        }
+      SRpcMsg rsp = {.code = code, .info = pRpc->info};
+
+      if ((code == TSDB_CODE_NODE_NOT_DEPLOYED || code == TSDB_CODE_APP_NOT_READY) && pRpc->msgType > TDMT_MND_MSG &&
+          pRpc->msgType < TDMT_VND_MSG) {
+        dmBuildMnodeRedirectRsp(pDnode, &rsp);
       }
-      SRpcMsg rspMsg = {.code = code, .info = pRpc->info};
-      tmsgSendRsp(&rspMsg);
+
+      if (pWrapper != NULL) {
+        dmSendRsp(&rsp);
+      } else {
+        rpcSendResponse(&rsp);
+      }
     }
 
-    dTrace("msg:%p, is freed", pMsg);
-    taosFreeQitem(pMsg);
+    if (pMsg != NULL) {
+      dTrace("msg:%p, is freed", pMsg);
+      taosFreeQitem(pMsg);
+    }
     rpcFreeCont(pRpc->pCont);
   }
 
-  if (needRelease) {
-    dmReleaseWrapper(pWrapper);
-  }
-  return;
-
-_OVER_JUST_FREE:
-  rpcFreeCont(pRpc->pCont);
-  return;
-
-_OVER_RSP_FREE:
-  rpcFreeCont(pRpc->pCont);
-  SRpcMsg simpleRsp = {.code = terrno, .info = pRpc->info};
-  rpcSendResponse(&simpleRsp);
+  dmReleaseWrapper(pWrapper);
 }
 
 int32_t dmInitMsgHandle(SDnode *pDnode) {
@@ -200,88 +188,57 @@ int32_t dmInitMsgHandle(SDnode *pDnode) {
   return 0;
 }
 
-static void dmSendRpcRedirectRsp(const SRpcMsg *pReq) {
-  SDnode *pDnode = dmInstance();
-  SEpSet  epSet = {0};
-  dmGetMnodeEpSet(&pDnode->data, &epSet);
-
-  dDebug("RPC %p, req is redirected, num:%d use:%d", pReq->info.handle, epSet.numOfEps, epSet.inUse);
-  for (int32_t i = 0; i < epSet.numOfEps; ++i) {
-    dDebug("mnode index:%d %s:%u", i, epSet.eps[i].fqdn, epSet.eps[i].port);
-    if (strcmp(epSet.eps[i].fqdn, tsLocalFqdn) == 0 && epSet.eps[i].port == tsServerPort) {
-      epSet.inUse = (i + 1) % epSet.numOfEps;
-    }
-
-    epSet.eps[i].port = htons(epSet.eps[i].port);
-  }
-
-  SMEpSet msg = {.epSet = epSet};
-  int32_t len = tSerializeSMEpSet(NULL, 0, &msg);
-
-  SRpcMsg rsp = {
-      .code = TSDB_CODE_RPC_REDIRECT,
-      .info = pReq->info,
-      .contLen = len,
-  };
-  rsp.pCont = rpcMallocCont(len);
-  tSerializeSMEpSet(rsp.pCont, len, &msg);
-  rpcSendResponse(&rsp);
-}
-
-static inline void dmSendRecv(SEpSet *pEpSet, SRpcMsg *pReq, SRpcMsg *pRsp) {
+static inline int32_t dmSendReq(const SEpSet *pEpSet, SRpcMsg *pMsg) {
   SDnode *pDnode = dmInstance();
   if (pDnode->status != DND_STAT_RUNNING) {
-    pRsp->code = TSDB_CODE_NODE_OFFLINE;
-    rpcFreeCont(pReq->pCont);
-    pReq->pCont = NULL;
-  } else {
-    rpcSendRecv(pDnode->trans.clientRpc, pEpSet, pReq, pRsp);
-  }
-}
-
-static inline int32_t dmSendReq(const SEpSet *pEpSet, SRpcMsg *pReq) {
-  SDnode *pDnode = dmInstance();
-  if (pDnode->status != DND_STAT_RUNNING) {
-    rpcFreeCont(pReq->pCont);
-    pReq->pCont = NULL;
+    rpcFreeCont(pMsg->pCont);
+    pMsg->pCont = NULL;
     terrno = TSDB_CODE_NODE_OFFLINE;
-    dError("failed to send rpc msg since %s, handle:%p", terrstr(), pReq->info.handle);
+    dError("failed to send rpc msg since %s, handle:%p", terrstr(), pMsg->info.handle);
     return -1;
   } else {
-    rpcSendRequest(pDnode->trans.clientRpc, pEpSet, pReq, NULL);
+    rpcSendRequest(pDnode->trans.clientRpc, pEpSet, pMsg, NULL);
     return 0;
   }
 }
 
 static inline void dmSendRsp(SRpcMsg *pMsg) {
   SMgmtWrapper *pWrapper = pMsg->info.wrapper;
-  if (pMsg->code == TSDB_CODE_NODE_REDIRECT) {
-    dmSendRpcRedirectRsp(pMsg);
+  if (InChildProc(pWrapper)) {
+    dmPutToProcPQueue(&pWrapper->proc, pMsg, DND_FUNC_RSP);
   } else {
-    if (InChildProc(pWrapper)) {
-      dmPutToProcPQueue(&pWrapper->proc, pMsg, DND_FUNC_RSP);
-    } else {
-      rpcSendResponse(pMsg);
-    }
+    rpcSendResponse(pMsg);
+  }
+}
+
+static void dmBuildMnodeRedirectRsp(SDnode *pDnode, SRpcMsg *pMsg) {
+  SEpSet epSet = {0};
+  dmGetMnodeEpSetForRedirect(&pDnode->data, pMsg, &epSet);
+
+  int32_t contLen = tSerializeSEpSet(NULL, 0, &epSet);
+  pMsg->pCont = rpcMallocCont(contLen);
+  if (pMsg->pCont == NULL) {
+    pMsg->code = TSDB_CODE_OUT_OF_MEMORY;
+  } else {
+    tSerializeSEpSet(pMsg->pCont, contLen, &epSet);
+    pMsg->contLen = contLen;
   }
 }
 
 static inline void dmSendRedirectRsp(SRpcMsg *pMsg, const SEpSet *pNewEpSet) {
-  SMgmtWrapper *pWrapper = pMsg->info.wrapper;
-  if (InChildProc(pWrapper)) {
-    dmPutToProcPQueue(&pWrapper->proc, pMsg, DND_FUNC_RSP);
-  } else {
-    SRpcMsg rsp = {0};
-    SMEpSet msg = {.epSet = *pNewEpSet};
-    int32_t len = tSerializeSMEpSet(NULL, 0, &msg);
-    rsp.pCont = rpcMallocCont(len);
-    rsp.contLen = len;
-    tSerializeSMEpSet(rsp.pCont, len, &msg);
+  SRpcMsg rsp = {.code = TSDB_CODE_RPC_REDIRECT, .info = pMsg->info};
+  int32_t contLen = tSerializeSEpSet(NULL, 0, pNewEpSet);
 
-    rsp.code = TSDB_CODE_RPC_REDIRECT;
-    rsp.info = pMsg->info;
-    rpcSendResponse(&rsp);
+  rsp.pCont = rpcMallocCont(contLen);
+  if (rsp.pCont == NULL) {
+    terrno = TSDB_CODE_OUT_OF_MEMORY;
+  } else {
+    tSerializeSEpSet(rsp.pCont, contLen, pNewEpSet);
+    rsp.contLen = contLen;
   }
+  dmSendRsp(&rsp);
+  rpcFreeCont(pMsg->pCont);
+  pMsg->pCont = NULL;
 }
 
 static inline void dmRegisterBrokenLinkArg(SRpcMsg *pMsg) {
@@ -315,15 +272,8 @@ int32_t dmInitClient(SDnode *pDnode) {
   rpcInit.sessions = 1024;
   rpcInit.connType = TAOS_CONN_CLIENT;
   rpcInit.idleTime = tsShellActivityTimer * 1000;
-  rpcInit.user = INTERNAL_USER;
-  rpcInit.ckey = INTERNAL_CKEY;
-  rpcInit.spi = 1;
   rpcInit.parent = pDnode;
   rpcInit.rfp = rpcRfp;
-
-  char pass[TSDB_PASSWORD_LEN + 1] = {0};
-  taosEncryptPass_c((uint8_t *)(INTERNAL_SECRET), strlen(INTERNAL_SECRET), pass);
-  rpcInit.secret = pass;
 
   pTrans->clientRpc = rpcOpen(&rpcInit);
   if (pTrans->clientRpc == NULL) {
@@ -344,66 +294,6 @@ void dmCleanupClient(SDnode *pDnode) {
   }
 }
 
-static inline int32_t dmGetHideUserAuth(char *user, char *spi, char *encrypt, char *secret, char *ckey) {
-  int32_t code = 0;
-  char    pass[TSDB_PASSWORD_LEN + 1] = {0};
-
-  if (strcmp(user, INTERNAL_USER) == 0) {
-    taosEncryptPass_c((uint8_t *)(INTERNAL_SECRET), strlen(INTERNAL_SECRET), pass);
-  } else if (strcmp(user, TSDB_NETTEST_USER) == 0) {
-    taosEncryptPass_c((uint8_t *)(TSDB_NETTEST_USER), strlen(TSDB_NETTEST_USER), pass);
-  } else {
-    code = -1;
-  }
-
-  if (code == 0) {
-    memcpy(secret, pass, TSDB_PASSWORD_LEN);
-    *spi = 1;
-    *encrypt = 0;
-    *ckey = 0;
-  }
-
-  return code;
-}
-
-static inline int32_t dmRetrieveUserAuthInfo(SDnode *pDnode, char *user, char *spi, char *encrypt, char *secret,
-                                             char *ckey) {
-  if (dmGetHideUserAuth(user, spi, encrypt, secret, ckey) == 0) {
-    dTrace("user:%s, get auth from mnode, spi:%d encrypt:%d", user, *spi, *encrypt);
-    return 0;
-  }
-
-  SAuthReq authReq = {0};
-  tstrncpy(authReq.user, user, TSDB_USER_LEN);
-  int32_t contLen = tSerializeSAuthReq(NULL, 0, &authReq);
-  void   *pReq = rpcMallocCont(contLen);
-  tSerializeSAuthReq(pReq, contLen, &authReq);
-
-  SRpcMsg rpcMsg = {.pCont = pReq, .contLen = contLen, .msgType = TDMT_MND_AUTH, .info.ahandle = (void *)9528};
-  SRpcMsg rpcRsp = {0};
-  SEpSet  epSet = {0};
-  dTrace("user:%s, send user auth req to other mnodes, spi:%d encrypt:%d", user, authReq.spi, authReq.encrypt);
-  dmGetMnodeEpSet(&pDnode->data, &epSet);
-  dmSendRecv(&epSet, &rpcMsg, &rpcRsp);
-
-  if (rpcRsp.code != 0) {
-    terrno = rpcRsp.code;
-    dError("user:%s, failed to get user auth from other mnodes since %s", user, terrstr());
-  } else {
-    SAuthRsp authRsp = {0};
-    tDeserializeSAuthReq(rpcRsp.pCont, rpcRsp.contLen, &authRsp);
-    memcpy(secret, authRsp.secret, TSDB_PASSWORD_LEN);
-    memcpy(ckey, authRsp.ckey, TSDB_PASSWORD_LEN);
-    *spi = authRsp.spi;
-    *encrypt = authRsp.encrypt;
-    dTrace("user:%s, success to get user auth from other mnodes, spi:%d encrypt:%d", user, authRsp.spi,
-           authRsp.encrypt);
-  }
-
-  rpcFreeCont(rpcRsp.pCont);
-  return rpcRsp.code;
-}
-
 int32_t dmInitServer(SDnode *pDnode) {
   SDnodeTrans *pTrans = &pDnode->trans;
 
@@ -416,7 +306,6 @@ int32_t dmInitServer(SDnode *pDnode) {
   rpcInit.sessions = tsMaxShellConns;
   rpcInit.connType = TAOS_CONN_SERVER;
   rpcInit.idleTime = tsShellActivityTimer * 1000;
-  rpcInit.afp = (RpcAfp)dmRetrieveUserAuthInfo;
   rpcInit.parent = pDnode;
 
   pTrans->serverRpc = rpcOpen(&rpcInit);

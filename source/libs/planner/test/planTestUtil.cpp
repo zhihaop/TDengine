@@ -14,6 +14,7 @@
  */
 
 #include "planTestUtil.h"
+#include <getopt.h>
 
 #include <algorithm>
 #include <array>
@@ -48,6 +49,7 @@ enum DumpModule {
 
 DumpModule g_dumpModule = DUMP_MODULE_NOTHING;
 int32_t    g_skipSql = 0;
+int32_t    g_logLevel = 131;
 
 void setDumpModule(const char* pModule) {
   if (NULL == pModule) {
@@ -71,14 +73,29 @@ void setDumpModule(const char* pModule) {
   }
 }
 
+void setSkipSqlNum(const char* pNum) { g_skipSql = stoi(pNum); }
+
+void setLogLevel(const char* pLogLevel) { g_logLevel = stoi(pLogLevel); }
+
+int32_t getLogLevel() { return g_logLevel; }
+
 class PlannerTestBaseImpl {
  public:
+  PlannerTestBaseImpl() : sqlNo_(0) {}
+
   void useDb(const string& acctId, const string& db) {
     caseEnv_.acctId_ = acctId;
     caseEnv_.db_ = db;
+    caseEnv_.nsql_ = g_skipSql;
   }
 
   void run(const string& sql) {
+    ++sqlNo_;
+    if (caseEnv_.nsql_ > 0) {
+      --(caseEnv_.nsql_);
+      return;
+    }
+
     reset();
     try {
       SQuery* pQuery = nullptr;
@@ -109,6 +126,10 @@ class PlannerTestBaseImpl {
   }
 
   void prepare(const string& sql) {
+    if (caseEnv_.nsql_ > 0) {
+      return;
+    }
+
     reset();
     try {
       doParseSql(sql, &stmtEnv_.pQuery_, true);
@@ -119,6 +140,10 @@ class PlannerTestBaseImpl {
   }
 
   void bindParams(TAOS_MULTI_BIND* pParams, int32_t colIdx) {
+    if (caseEnv_.nsql_ > 0) {
+      return;
+    }
+
     try {
       doBindParams(stmtEnv_.pQuery_, pParams, colIdx);
     } catch (...) {
@@ -128,6 +153,11 @@ class PlannerTestBaseImpl {
   }
 
   void exec() {
+    if (caseEnv_.nsql_ > 0) {
+      --(caseEnv_.nsql_);
+      return;
+    }
+
     try {
       doParseBoundSql(stmtEnv_.pQuery_);
 
@@ -157,8 +187,11 @@ class PlannerTestBaseImpl {
 
  private:
   struct caseEnv {
-    string acctId_;
-    string db_;
+    string  acctId_;
+    string  db_;
+    int32_t nsql_;
+
+    caseEnv() : nsql_(0) {}
   };
 
   struct stmtEnv {
@@ -166,6 +199,7 @@ class PlannerTestBaseImpl {
     array<char, 1024> msgBuf_;
     SQuery*           pQuery_;
 
+    stmtEnv() : pQuery_(nullptr) {}
     ~stmtEnv() { qDestroyQuery(pQuery_); }
   };
 
@@ -201,49 +235,49 @@ class PlannerTestBaseImpl {
       return;
     }
 
-    cout << "==========================================sql : [" << stmtEnv_.sql_ << "]" << endl;
+    cout << "========================================== " << sqlNo_ << " sql : [" << stmtEnv_.sql_ << "]" << endl;
 
     if (DUMP_MODULE_ALL == module || DUMP_MODULE_PARSER == module) {
       if (res_.prepareAst_.empty()) {
-        cout << "syntax tree : " << endl;
+        cout << "+++++++++++++++++++++syntax tree : " << endl;
         cout << res_.ast_ << endl;
       } else {
-        cout << "prepare syntax tree : " << endl;
+        cout << "+++++++++++++++++++++prepare syntax tree : " << endl;
         cout << res_.prepareAst_ << endl;
-        cout << "bound syntax tree : " << endl;
+        cout << "+++++++++++++++++++++bound syntax tree : " << endl;
         cout << res_.boundAst_ << endl;
-        cout << "syntax tree : " << endl;
+        cout << "+++++++++++++++++++++syntax tree : " << endl;
         cout << res_.ast_ << endl;
       }
     }
 
     if (DUMP_MODULE_ALL == module || DUMP_MODULE_LOGIC == module) {
-      cout << "raw logic plan : " << endl;
+      cout << "+++++++++++++++++++++raw logic plan : " << endl;
       cout << res_.rawLogicPlan_ << endl;
     }
 
     if (DUMP_MODULE_ALL == module || DUMP_MODULE_OPTIMIZED == module) {
-      cout << "optimized logic plan : " << endl;
+      cout << "+++++++++++++++++++++optimized logic plan : " << endl;
       cout << res_.optimizedLogicPlan_ << endl;
     }
 
     if (DUMP_MODULE_ALL == module || DUMP_MODULE_SPLIT == module) {
-      cout << "split logic plan : " << endl;
+      cout << "+++++++++++++++++++++split logic plan : " << endl;
       cout << res_.splitLogicPlan_ << endl;
     }
 
     if (DUMP_MODULE_ALL == module || DUMP_MODULE_SCALED == module) {
-      cout << "scaled logic plan : " << endl;
+      cout << "+++++++++++++++++++++scaled logic plan : " << endl;
       cout << res_.scaledLogicPlan_ << endl;
     }
 
     if (DUMP_MODULE_ALL == module || DUMP_MODULE_PHYSICAL == module) {
-      cout << "physical plan : " << endl;
+      cout << "+++++++++++++++++++++physical plan : " << endl;
       cout << res_.physiPlan_ << endl;
     }
 
     if (DUMP_MODULE_ALL == module || DUMP_MODULE_SUBPLAN == module) {
-      cout << "physical subplan : " << endl;
+      cout << "+++++++++++++++++++++physical subplan : " << endl;
       for (const auto& subplan : res_.physiSubplans_) {
         cout << subplan << endl;
       }
@@ -322,6 +356,7 @@ class PlannerTestBaseImpl {
   }
 
   void setPlanContext(SQuery* pQuery, SPlanContext* pCxt) {
+    pCxt->queryId = 1;
     if (QUERY_NODE_CREATE_TOPIC_STMT == nodeType(pQuery->pRoot)) {
       pCxt->pAstRoot = ((SCreateTopicStmt*)pQuery->pRoot)->pQuery;
       pCxt->topicQuery = true;
@@ -353,6 +388,7 @@ class PlannerTestBaseImpl {
   caseEnv caseEnv_;
   stmtEnv stmtEnv_;
   stmtRes res_;
+  int32_t sqlNo_;
 };
 
 PlannerTestBase::PlannerTestBase() : impl_(new PlannerTestBaseImpl()) {}

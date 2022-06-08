@@ -60,6 +60,7 @@ typedef struct SColumnNode {
   int8_t      tableType;
   col_id_t    colId;
   EColumnType colType;  // column or tag
+  bool        hasIndex;
   char        dbName[TSDB_DB_NAME_LEN];
   char        tableName[TSDB_TABLE_NAME_LEN];
   char        tableAlias[TSDB_TABLE_NAME_LEN];
@@ -81,6 +82,7 @@ typedef struct SValueNode {
   char*     literal;
   bool      isDuration;
   bool      translate;
+  bool      notReserved;
   int16_t   placeholderNo;
   union {
     bool     b;
@@ -92,6 +94,10 @@ typedef struct SValueNode {
   int64_t typeData;
   char    unit;
 } SValueNode;
+
+typedef struct SLeftValueNode {
+  ENodeType type;
+} SLeftValueNode;
 
 typedef struct SOperatorNode {
   SExprNode     node;  // QUERY_NODE_OPERATOR
@@ -127,6 +133,7 @@ typedef struct STableNode {
   char      tableName[TSDB_TABLE_NAME_LEN];
   char      tableAlias[TSDB_TABLE_NAME_LEN];
   uint8_t   precision;
+  bool      singleTable;
 } STableNode;
 
 struct STableMeta;
@@ -236,6 +243,9 @@ typedef struct SSelectStmt {
   bool        isTimeOrderQuery;
   bool        hasAggFuncs;
   bool        hasRepeatScanFuncs;
+  bool        hasIndefiniteRowsFunc;
+  bool        hasSelectFunc;
+  bool        hasSelectValFunc;
 } SSelectStmt;
 
 typedef enum ESetOperatorType { SET_OP_TYPE_UNION_ALL = 1, SET_OP_TYPE_UNION } ESetOperatorType;
@@ -248,6 +258,8 @@ typedef struct SSetOperator {
   SNode*           pRight;
   SNodeList*       pOrderByList;  // SOrderByExprNode
   SNode*           pLimit;
+  char             stmtName[TSDB_TABLE_NAME_LEN];
+  uint8_t          precision;
 } SSetOperator;
 
 typedef enum ESqlClause {
@@ -261,6 +273,17 @@ typedef enum ESqlClause {
   SQL_CLAUSE_SELECT,
   SQL_CLAUSE_ORDER_BY
 } ESqlClause;
+
+typedef struct SDeleteStmt {
+  ENodeType   type;           // QUERY_NODE_DELETE_STMT
+  SNode*      pFromTable;     // FROM clause
+  SNode*      pWhere;         // WHERE clause
+  SNode*      pCountFunc;     // count the number of rows affected
+  SNode*      pTagIndexCond;  // pWhere divided into pTagIndexCond and timeRange
+  STimeWindow timeRange;
+  uint8_t     precision;
+  bool        deleteZeroRows;
+} SDeleteStmt;
 
 typedef enum {
   PAYLOAD_TYPE_KV = 0,
@@ -312,21 +335,22 @@ typedef enum EQueryExecMode {
 } EQueryExecMode;
 
 typedef struct SQuery {
-  ENodeType      type;
-  EQueryExecMode execMode;
-  bool           haveResultSet;
-  SNode*         pRoot;
-  int32_t        numOfResCols;
-  SSchema*       pResSchema;
-  int8_t         precision;
-  SCmdMsgInfo*   pCmdMsg;
-  int32_t        msgType;
-  SArray*        pDbList;
-  SArray*        pTableList;
-  bool           showRewrite;
-  int32_t        placeholderNum;
-  SArray*        pPlaceholderValues;
-  SNode*         pPrepareRoot;
+  ENodeType               type;
+  EQueryExecMode          execMode;
+  bool                    haveResultSet;
+  SNode*                  pRoot;
+  int32_t                 numOfResCols;
+  SSchema*                pResSchema;
+  int8_t                  precision;
+  SCmdMsgInfo*            pCmdMsg;
+  int32_t                 msgType;
+  SArray*                 pTableList;
+  SArray*                 pDbList;
+  bool                    showRewrite;
+  int32_t                 placeholderNum;
+  SArray*                 pPlaceholderValues;
+  SNode*                  pPrepareRoot;
+  struct SParseMetaCache* pMetaCache;
 } SQuery;
 
 void nodesWalkSelectStmt(SSelectStmt* pSelect, ESqlClause clause, FNodeWalker walker, void* pContext);
@@ -349,14 +373,14 @@ bool nodesIsComparisonOp(const SOperatorNode* pOp);
 bool nodesIsJsonOp(const SOperatorNode* pOp);
 bool nodesIsRegularOp(const SOperatorNode* pOp);
 
-bool nodesIsTimeorderQuery(const SNode* pQuery);
-bool nodesIsTimelineQuery(const SNode* pQuery);
-
 void*   nodesGetValueFromNode(SValueNode* pNode);
 int32_t nodesSetValueNodeValue(SValueNode* pNode, void* value);
 char*   nodesGetStrValueFromNode(SValueNode* pNode);
-char*   getFillModeString(EFillMode mode);
-void    valueNodeToVariant(const SValueNode* pNode, SVariant* pVal);
+void    nodesValueNodeToVariant(const SValueNode* pNode, SVariant* pVal);
+
+char*   nodesGetFillModeString(EFillMode mode);
+int32_t nodesMergeConds(SNode** pDst, SNodeList** pSrc);
+int32_t nodesPartitionCond(SNode** pCondition, SNode** pPrimaryKeyCond, SNode** pTagCond, SNode** pOtherCond);
 
 #ifdef __cplusplus
 }

@@ -13,8 +13,8 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef _TD_DND_IMP_H_
-#define _TD_DND_IMP_H_
+#ifndef _TD_DND_MGMT_H_
+#define _TD_DND_MGMT_H_
 
 // tobe deleted
 #include "uv.h"
@@ -70,7 +70,7 @@ typedef struct SMgmtWrapper {
   const char    *name;
   char          *path;
   int32_t        refCount;
-  SRWLatch       latch;
+  TdThreadRwlock lock;
   EDndNodeType   ntype;
   bool           deployed;
   bool           required;
@@ -134,10 +134,9 @@ SMgmtWrapper *dmAcquireWrapper(SDnode *pDnode, EDndNodeType nType);
 int32_t       dmMarkWrapper(SMgmtWrapper *pWrapper);
 void          dmReleaseWrapper(SMgmtWrapper *pWrapper);
 SMgmtInputOpt dmBuildMgmtInputOpt(SMgmtWrapper *pWrapper);
-
-void dmSetStatus(SDnode *pDnode, EDndRunStatus stype);
-void dmProcessServerStartupStatus(SDnode *pDnode, SRpcMsg *pMsg);
-void dmProcessNetTestReq(SDnode *pDnode, SRpcMsg *pMsg);
+void          dmSetStatus(SDnode *pDnode, EDndRunStatus stype);
+void          dmProcessServerStartupStatus(SDnode *pDnode, SRpcMsg *pMsg);
+void          dmProcessNetTestReq(SDnode *pDnode, SRpcMsg *pMsg);
 
 // dmNodes.c
 int32_t dmOpenNode(SMgmtWrapper *pWrapper);
@@ -165,16 +164,14 @@ SMsgCb  dmGetMsgcb(SDnode *pDnode);
 int32_t dmInitMsgHandle(SDnode *pDnode);
 int32_t dmProcessNodeMsg(SMgmtWrapper *pWrapper, SRpcMsg *pMsg);
 
-// mgmt nodes
-SMgmtFunc dmGetMgmtFunc();
-SMgmtFunc bmGetMgmtFunc();
-SMgmtFunc qmGetMgmtFunc();
-SMgmtFunc smGetMgmtFunc();
-SMgmtFunc vmGetMgmtFunc();
-SMgmtFunc mmGetMgmtFunc();
+// dmMonitor.c
+void dmSendMonitorReport();
+void dmGetVnodeLoads(SMonVloadInfo *pInfo);
+void dmGetMnodeLoads(SMonMloadInfo *pInfo);
+void dmGetQnodeLoads(SQnodeLoad *pInfo);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /*_TD_DND_IMP_H_*/
+#endif /*_TD_DND_MGMT_H_*/

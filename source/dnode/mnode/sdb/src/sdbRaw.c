@@ -14,7 +14,17 @@
  */
 
 #define _DEFAULT_SOURCE
-#include "sdbInt.h"
+#include "sdb.h"
+
+int32_t sdbGetIdFromRaw(SSdb *pSdb, SSdbRaw *pRaw) {
+  EKeyType keytype = pSdb->keyTypes[pRaw->type];
+  if (keytype == SDB_KEY_INT32) {
+    int32_t id = *((int32_t *)(pRaw->pData));
+    return id;
+  } else {
+    return -2;
+  }
+}
 
 SSdbRaw *sdbAllocRaw(ESdbType type, int8_t sver, int32_t dataLen) {
   SSdbRaw *pRaw = taosMemoryCalloc(1, dataLen + sizeof(SSdbRaw));
@@ -32,8 +42,10 @@ SSdbRaw *sdbAllocRaw(ESdbType type, int8_t sver, int32_t dataLen) {
 }
 
 void sdbFreeRaw(SSdbRaw *pRaw) {
-  mTrace("raw:%p, is freed", pRaw);
-  taosMemoryFree(pRaw);
+  if (pRaw != NULL) {
+    mTrace("raw:%p, is freed", pRaw);
+    taosMemoryFree(pRaw);
+  }
 }
 
 int32_t sdbSetRawInt8(SSdbRaw *pRaw, int32_t dataPos, int8_t val) {

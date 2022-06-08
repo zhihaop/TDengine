@@ -22,6 +22,29 @@
 #include "ttypes.h"
 #include "tvariant.h"
 
+#define INDEX_DATA_BOOL_NULL      0x02
+#define INDEX_DATA_TINYINT_NULL   0x80
+#define INDEX_DATA_SMALLINT_NULL  0x8000
+#define INDEX_DATA_INT_NULL       0x80000000L
+#define INDEX_DATA_BIGINT_NULL    0x8000000000000000L
+#define INDEX_DATA_TIMESTAMP_NULL TSDB_DATA_BIGINT_NULL
+
+#define INDEX_DATA_FLOAT_NULL    0x7FF00000           // it is an NAN
+#define INDEX_DATA_DOUBLE_NULL   0x7FFFFF0000000000L  // an NAN
+#define INDEX_DATA_NCHAR_NULL    0xFFFFFFFF
+#define INDEX_DATA_BINARY_NULL   0xFF
+#define INDEX_DATA_JSON_NULL     0xFFFFFFFF
+#define INDEX_DATA_JSON_null     0xFFFFFFFE
+#define INDEX_DATA_JSON_NOT_NULL 0x01
+
+#define INDEX_DATA_UTINYINT_NULL  0xFF
+#define INDEX_DATA_USMALLINT_NULL 0xFFFF
+#define INDEX_DATA_UINT_NULL      0xFFFFFFFF
+#define INDEX_DATA_UBIGINT_NULL   0xFFFFFFFFFFFFFFFFL
+
+#define INDEX_DATA_NULL_STR   "NULL"
+#define INDEX_DATA_NULL_STR_L "null"
+
 char JSON_COLUMN[] = "JSON";
 char JSON_VALUE_DELIM = '&';
 
@@ -52,7 +75,7 @@ char* indexInt2str(int64_t val, char* dst, int radix) {
     ;
   return dst - 1;
 }
-static __compar_fn_t indexGetCompar(int8_t type) {
+__compar_fn_t indexGetCompar(int8_t type) {
   if (type == TSDB_DATA_TYPE_BINARY || type == TSDB_DATA_TYPE_NCHAR) {
     return (__compar_fn_t)strcmp;
   }
@@ -73,6 +96,11 @@ static TExeCond tCompareGreaterThan(void* a, void* b, int8_t type) {
 static TExeCond tCompareGreaterEqual(void* a, void* b, int8_t type) {
   __compar_fn_t func = indexGetCompar(type);
   return tCompare(func, QUERY_GREATER_EQUAL, a, b, type);
+}
+
+static TExeCond tCompareContains(void* a, void* b, int8_t type) {
+  __compar_fn_t func = indexGetCompar(type);
+  return tCompare(func, QUERY_TERM, a, b, type);
 }
 TExeCond tCompare(__compar_fn_t func, int8_t cmptype, void* a, void* b, int8_t dtype) {
   if (dtype == TSDB_DATA_TYPE_BINARY || dtype == TSDB_DATA_TYPE_NCHAR || dtype == TSDB_DATA_TYPE_VARBINARY) {
@@ -118,21 +146,21 @@ TExeCond tCompare(__compar_fn_t func, int8_t cmptype, void* a, void* b, int8_t d
     }
     return tDoCompare(func, cmptype, &va, &vb);
   } else if (dtype == TSDB_DATA_TYPE_FLOAT) {
-    float va = strtod(a, NULL);
+    float va = taosStr2Float(a, NULL);
     if (errno == ERANGE && va == -1) {
       return CONTINUE;
     }
-    float vb = strtod(b, NULL);
+    float vb = taosStr2Float(b, NULL);
     if (errno == ERANGE && va == -1) {
       return CONTINUE;
     }
     return tDoCompare(func, cmptype, &va, &vb);
   } else if (dtype == TSDB_DATA_TYPE_DOUBLE) {
-    double va = strtod(a, NULL);
+    double va = taosStr2Double(a, NULL);
     if (errno == ERANGE && va == -1) {
       return CONTINUE;
     }
-    double vb = strtod(b, NULL);
+    double vb = taosStr2Double(b, NULL);
     if (errno == ERANGE && va == -1) {
       return CONTINUE;
     }
@@ -159,12 +187,17 @@ TExeCond tDoCompare(__compar_fn_t func, int8_t comparType, void* a, void* b) {
     case QUERY_GREATER_EQUAL: {
       if (ret >= 0) return MATCH;
     }
+    case QUERY_TERM: {
+      if (ret == 0) return MATCH;
+    }
+    default:
+      return BREAK;
   }
   return CONTINUE;
 }
 
-static TExeCond (*rangeCompare[])(void* a, void* b, int8_t type) = {tCompareLessThan, tCompareLessEqual,
-                                                                    tCompareGreaterThan, tCompareGreaterEqual};
+static TExeCond (*rangeCompare[])(void* a, void* b, int8_t type) = {
+    tCompareLessThan, tCompareLessEqual, tCompareGreaterThan, tCompareGreaterEqual, tCompareContains};
 
 _cache_range_compare indexGetCompare(RangeType ty) { return rangeCompare[ty]; }
 
@@ -316,65 +349,76 @@ int32_t indexConvertDataToStr(void* src, int8_t type, void** dst) {
     case TSDB_DATA_TYPE_TIMESTAMP:
       *dst = taosMemoryCalloc(1, bufSize + 1);
       indexInt2str(*(int64_t*)src, *dst, -1);
+      tlen = strlen(*dst);
       break;
     case TSDB_DATA_TYPE_BOOL:
     case TSDB_DATA_TYPE_UTINYINT:
       *dst = taosMemoryCalloc(1, bufSize + 1);
       indexInt2str(*(uint8_t*)src, *dst, 1);
+      tlen = strlen(*dst);
       break;
     case TSDB_DATA_TYPE_TINYINT:
       *dst = taosMemoryCalloc(1, bufSize + 1);
       indexInt2str(*(int8_t*)src, *dst, 1);
+      tlen = strlen(*dst);
       break;
     case TSDB_DATA_TYPE_SMALLINT:
       *dst = taosMemoryCalloc(1, bufSize + 1);
       indexInt2str(*(int16_t*)src, *dst, -1);
+      tlen = strlen(*dst);
       break;
     case TSDB_DATA_TYPE_USMALLINT:
       *dst = taosMemoryCalloc(1, bufSize + 1);
       indexInt2str(*(uint16_t*)src, *dst, -1);
+      tlen = strlen(*dst);
       break;
     case TSDB_DATA_TYPE_INT:
       *dst = taosMemoryCalloc(1, bufSize + 1);
       indexInt2str(*(int32_t*)src, *dst, -1);
+      tlen = strlen(*dst);
       break;
     case TSDB_DATA_TYPE_UINT:
       *dst = taosMemoryCalloc(1, bufSize + 1);
       indexInt2str(*(uint32_t*)src, *dst, 1);
+      tlen = strlen(*dst);
       break;
     case TSDB_DATA_TYPE_BIGINT:
       *dst = taosMemoryCalloc(1, bufSize + 1);
       sprintf(*dst, "%" PRIu64, *(uint64_t*)src);
+      tlen = strlen(*dst);
       break;
     case TSDB_DATA_TYPE_UBIGINT:
       *dst = taosMemoryCalloc(1, bufSize + 1);
       indexInt2str(*(uint64_t*)src, *dst, 1);
+      tlen = strlen(*dst);
     case TSDB_DATA_TYPE_FLOAT:
       *dst = taosMemoryCalloc(1, bufSize + 1);
       sprintf(*dst, "%.9lf", *(float*)src);
+      tlen = strlen(*dst);
       break;
     case TSDB_DATA_TYPE_DOUBLE:
       *dst = taosMemoryCalloc(1, bufSize + 1);
       sprintf(*dst, "%.9lf", *(double*)src);
+      tlen = strlen(*dst);
       break;
     case TSDB_DATA_TYPE_NCHAR: {
       tlen = taosEncodeBinary(NULL, varDataVal(src), varDataLen(src));
       *dst = taosMemoryCalloc(1, tlen + 1);
       tlen = taosEncodeBinary(dst, varDataVal(src), varDataLen(src));
-      *dst = (char*) * dst - tlen;
+      *dst = (char*)*dst - tlen;
       break;
     }
     case TSDB_DATA_TYPE_VARCHAR: {  // TSDB_DATA_TYPE_BINARY
-      tlen = taosEncodeBinary(NULL, src, strlen(src));
+      tlen = taosEncodeBinary(NULL, varDataVal(src), varDataLen(src));
       *dst = taosMemoryCalloc(1, tlen + 1);
-      tlen = taosEncodeBinary(dst, src, strlen(src));
+      tlen = taosEncodeBinary(dst, varDataVal(src), varDataLen(src));
       *dst = (char*)*dst - tlen;
       break;
     }
     case TSDB_DATA_TYPE_VARBINARY:
-      tlen = taosEncodeBinary(NULL, src, strlen(src));
+      tlen = taosEncodeBinary(NULL, varDataVal(src), varDataLen(src));
       *dst = taosMemoryCalloc(1, tlen + 1);
-      tlen = taosEncodeBinary(dst, src, strlen(src));
+      tlen = taosEncodeBinary(dst, varDataVal(src), varDataLen(src));
       *dst = (char*)*dst - tlen;
       break;
     default:
