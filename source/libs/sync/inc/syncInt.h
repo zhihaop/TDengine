@@ -169,6 +169,7 @@ void       syncNodeStart(SSyncNode* pSyncNode);
 void       syncNodeStartStandBy(SSyncNode* pSyncNode);
 void       syncNodeClose(SSyncNode* pSyncNode);
 int32_t    syncNodePropose(SSyncNode* pSyncNode, const SRpcMsg* pMsg, bool isWeak);
+void       syncNodeSendErrRsp(SSyncNode* pSyncNode, SRpcMsg* pMsg);
 
 // option
 bool syncNodeSnapshotEnable(SSyncNode* pSyncNode);

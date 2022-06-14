@@ -32,9 +32,9 @@ typedef struct SRespStub {
 } SRespStub;
 
 typedef struct SSyncRespMgr {
-  SHashObj *    pRespHash;
+  SHashObj     *pRespHash;
   int64_t       ttl;
-  void *        data;
+  void         *data;
   TdThreadMutex mutex;
   uint64_t      seqNum;
 } SSyncRespMgr;
@@ -47,6 +47,7 @@ int32_t       syncRespMgrGet(SSyncRespMgr *pObj, uint64_t index, SRespStub *pStu
 int32_t       syncRespMgrGetAndDel(SSyncRespMgr *pObj, uint64_t index, SRespStub *pStub);
 void          syncRespClean(SSyncRespMgr *pObj);
 void          syncRespCleanByTTL(SSyncRespMgr *pObj, int64_t ttl);
+void          syncRespAll(SSyncRespMgr *pObj);
 
 #ifdef __cplusplus
 }

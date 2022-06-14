@@ -91,3 +91,17 @@ void syncRespClean(SSyncRespMgr *pObj) {
 }
 
 void syncRespCleanByTTL(SSyncRespMgr *pObj, int64_t ttl) {}
+
+void syncRespAll(SSyncRespMgr *pObj) {
+  SSyncNode *pSyncNode = pObj->data;
+  taosThreadMutexLock(&(pObj->mutex));
+
+  void *p = (void *)taosHashIterate(pObj->pRespHash, NULL);
+  while (p) {
+    SRespStub *pStub = p;
+    syncNodeSendErrRsp(pSyncNode, &(pStub->rpcMsg));
+    p = (void *)taosHashIterate(pObj->pRespHash, p);
+  }
+
+  taosThreadMutexUnlock(&(pObj->mutex));
+}

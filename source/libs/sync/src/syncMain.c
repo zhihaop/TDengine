@@ -771,18 +771,11 @@ SSyncNode* syncNodeOpen(const SSyncInfo* pOldSyncInfo) {
   }
 
   // tools
-  pSyncNode->pSyncRespMgr = syncRespMgrCreate(NULL, 0);
+  pSyncNode->pSyncRespMgr = syncRespMgrCreate(pSyncNode, 0);
   assert(pSyncNode->pSyncRespMgr != NULL);
 
   // restore state
   pSyncNode->restoreFinish = false;
-
-  // pSyncNode->pSnapshot = NULL;
-  // if (pSyncNode->pFsm->FpGetSnapshot != NULL) {
-  //   pSyncNode->pSnapshot = taosMemoryMalloc(sizeof(SSnapshot));
-  //   pSyncNode->pFsm->FpGetSnapshot(pSyncNode->pFsm, pSyncNode->pSnapshot);
-  // }
-  // tsem_init(&(pSyncNode->restoreSem), 0, 0);
 
   // snapshot senders
   for (int i = 0; i < TSDB_MAX_REPLICA; ++i) {
@@ -798,10 +791,14 @@ SSyncNode* syncNodeOpen(const SSyncInfo* pOldSyncInfo) {
   // start raft
   // syncNodeBecomeFollower(pSyncNode);
 
-  // snapshot meta
-  // pSyncNode->sMeta.lastConfigIndex = -1;
-
   return pSyncNode;
+}
+
+void syncNodeSendErrRsp(SSyncNode* pSyncNode, SRpcMsg* pMsg) {
+  int32_t code = terrno;
+  sDebug("vgId:%d sync event send error msg %s, code:0x%x", pSyncNode->vgId, tstrerror(code), code);
+  SRpcMsg rsp = {.code = code, .info = pMsg->info};
+  tmsgSendRsp(&rsp);
 }
 
 void syncNodeStart(SSyncNode* pSyncNode) {
@@ -847,6 +844,9 @@ void syncNodeStartStandBy(SSyncNode* pSyncNode) {
 
 void syncNodeClose(SSyncNode* pSyncNode) {
   sDebug("vgId:%d sync event sync close", pSyncNode->vgId);
+
+  // send err msg
+  syncRespAll(pSyncNode->pSyncRespMgr);
 
   int32_t ret;
   assert(pSyncNode != NULL);
@@ -1497,8 +1497,11 @@ void syncNodeFollower2Candidate(SSyncNode* pSyncNode) {
 
 void syncNodeLeader2Follower(SSyncNode* pSyncNode) {
   assert(pSyncNode->state == TAOS_SYNC_STATE_LEADER);
-  syncNodeBecomeFollower(pSyncNode, "leader to follower");
 
+  // send err msg
+  syncRespAll(pSyncNode->pSyncRespMgr);
+
+  syncNodeBecomeFollower(pSyncNode, "leader to follower");
   syncNodeLog2("==state change syncNodeLeader2Follower==", pSyncNode);
 }
 
