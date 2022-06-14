@@ -795,7 +795,7 @@ SSyncNode* syncNodeOpen(const SSyncInfo* pOldSyncInfo) {
 }
 
 void syncNodeSendErrRsp(SSyncNode* pSyncNode, SRpcMsg* pMsg) {
-  int32_t code = terrno;
+  int32_t code = TSDB_CODE_SYN_INTERNAL_ERROR;
   sDebug("vgId:%d sync event send error msg %s, code:0x%x", pSyncNode->vgId, tstrerror(code), code);
   SRpcMsg rsp = {.code = code, .info = pMsg->info};
   tmsgSendRsp(&rsp);
