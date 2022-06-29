@@ -26,6 +26,20 @@
 
 std::unique_ptr<MockCatalogService> g_mockCatalogService;
 
+namespace {
+
+void destoryMetaRes(void* p) {
+  SMetaRes* pRes = (SMetaRes*)p;
+  taosMemoryFree(pRes->pRes);
+}
+
+void destoryDnodeMetaRes(void* p) {
+  SMetaRes* pRes = (SMetaRes*)p;
+  taosArrayDestroy((SArray*)pRes->pRes);
+}
+
+}  // namespace
+
 class TableBuilder : public ITableBuilder {
  public:
   virtual TableBuilder& addColumn(const std::string& name, int8_t type, int32_t bytes) {
@@ -645,12 +659,8 @@ void MockCatalogService::destoryCatalogReq(SCatalogReq* pReq) {
   taosArrayDestroy(pReq->pIndex);
   taosArrayDestroy(pReq->pUser);
   taosArrayDestroy(pReq->pTableIndex);
+  taosArrayDestroy(pReq->pTableCfg);
   delete pReq;
-}
-
-void MockCatalogService::destoryMetaRes(void* p) {
-  SMetaRes* pRes = (SMetaRes*)p;
-  taosMemoryFree(pRes->pRes);
 }
 
 void MockCatalogService::destoryMetaData(SMetaData* pData) {
@@ -664,5 +674,7 @@ void MockCatalogService::destoryMetaData(SMetaData* pData) {
   taosArrayDestroyEx(pData->pIndex, destoryMetaRes);
   taosArrayDestroyEx(pData->pUser, destoryMetaRes);
   taosArrayDestroyEx(pData->pQnodeList, destoryMetaRes);
+  taosArrayDestroyEx(pData->pTableCfg, destoryMetaRes);
+  taosArrayDestroyEx(pData->pDnodeList, destoryDnodeMetaRes);
   delete pData;
 }

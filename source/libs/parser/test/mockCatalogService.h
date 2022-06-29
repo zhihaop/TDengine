@@ -51,7 +51,6 @@ class MockCatalogServiceImpl;
 class MockCatalogService {
  public:
   static void destoryCatalogReq(SCatalogReq* pReq);
-  static void destoryMetaRes(void* p);
   static void destoryMetaData(SMetaData* pData);
 
   MockCatalogService();

@@ -272,15 +272,17 @@ class ParserTestBaseImpl {
 
   void checkQuery(const SQuery* pQuery, ParserStage stage) { pBase_->checkDdl(pQuery, stage); }
 
+  static void destroyQuery(SQuery** p) { qDestroyQuery(*p); }
+
   void runInternalFuncs(const string& sql, int32_t expect, ParserStage checkStage) {
     reset(expect, checkStage, TEST_INTERFACE_INTERNAL);
     try {
       SParseContext cxt = {0};
       setParseContext(sql, &cxt);
 
-      SQuery* pQuery = nullptr;
+      SQuery*                                 pQuery = nullptr;
+      unique_ptr<SQuery*, void (*)(SQuery**)> query(&pQuery, ParserTestBaseImpl::destroyQuery);
       doParse(&cxt, &pQuery);
-      unique_ptr<SQuery, void (*)(SQuery*)> query(pQuery, qDestroyQuery);
 
       doAuthenticate(&cxt, pQuery, nullptr);
 
@@ -306,9 +308,9 @@ class ParserTestBaseImpl {
       SParseContext cxt = {0};
       setParseContext(sql, &cxt);
 
-      SQuery* pQuery = nullptr;
+      SQuery*                                 pQuery = nullptr;
+      unique_ptr<SQuery*, void (*)(SQuery**)> query(&pQuery, ParserTestBaseImpl::destroyQuery);
       doParseSql(&cxt, &pQuery);
-      unique_ptr<SQuery, void (*)(SQuery*)> query(pQuery, qDestroyQuery);
 
       if (g_dump) {
         dump();
@@ -328,9 +330,9 @@ class ParserTestBaseImpl {
       SParseContext cxt = {0};
       setParseContext(sql, &cxt, true);
 
-      SQuery* pQuery = nullptr;
+      SQuery*                                 pQuery = nullptr;
+      unique_ptr<SQuery*, void (*)(SQuery**)> query(&pQuery, ParserTestBaseImpl::destroyQuery);
       doParse(&cxt, &pQuery);
-      unique_ptr<SQuery, void (*)(SQuery*)> query(pQuery, qDestroyQuery);
 
       unique_ptr<SParseMetaCache, void (*)(SParseMetaCache*)> metaCache(new SParseMetaCache(), _destoryParseMetaCache);
       doCollectMetaKey(&cxt, pQuery, metaCache.get());
@@ -387,8 +389,8 @@ class ParserTestBaseImpl {
       unique_ptr<SCatalogReq, void (*)(SCatalogReq*)> catalogReq(new SCatalogReq(),
                                                                  MockCatalogService::destoryCatalogReq);
       SQuery*                                         pQuery = nullptr;
+      unique_ptr<SQuery*, void (*)(SQuery**)>         query(&pQuery, ParserTestBaseImpl::destroyQuery);
       doParseSqlSyntax(&cxt, &pQuery, catalogReq.get());
-      unique_ptr<SQuery, void (*)(SQuery*)> query(pQuery, qDestroyQuery);
 
       string err;
       thread t1([&]() {

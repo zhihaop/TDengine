@@ -1268,6 +1268,7 @@ static int32_t rewriteSystemInfoFuncImpl(STranslateContext* pCxt, char* pLiteral
     pVal->literal = pLiteral;
   }
   if (DEAL_RES_ERROR != translateValue(pCxt, pVal)) {
+    nodesDestroyNode(*pNode);
     *pNode = (SNode*)pVal;
   } else {
     nodesDestroyNode((SNode*)pVal);

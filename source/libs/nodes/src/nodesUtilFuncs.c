@@ -347,6 +347,13 @@ static void destroyVgDataBlockArray(SArray* pArray) {
   taosArrayDestroy(pArray);
 }
 
+static void destroyTableCfg(STableCfg* pCfg) {
+  taosMemoryFreeClear(pCfg->pComment);
+  taosArrayDestroy(pCfg->pFuncs);
+  taosMemoryFreeClear(pCfg->pSchemas);
+  taosMemoryFreeClear(pCfg);
+}
+
 static void destroyLogicNode(SLogicNode* pNode) {
   nodesDestroyList(pNode->pTargets);
   nodesDestroyNode(pNode->pConditions);
@@ -414,15 +421,18 @@ void nodesDestroyNode(SNode* pNode) {
       break;
     case QUERY_NODE_REAL_TABLE: {
       SRealTableNode* pReal = (SRealTableNode*)pNode;
+      destroyExprNode((SExprNode*)pNode);
       taosMemoryFreeClear(pReal->pMeta);
       taosMemoryFreeClear(pReal->pVgroupList);
       break;
     }
     case QUERY_NODE_TEMP_TABLE:
+      destroyExprNode((SExprNode*)pNode);
       nodesDestroyNode(((STempTableNode*)pNode)->pSubquery);
       break;
     case QUERY_NODE_JOIN_TABLE: {
       SJoinTableNode* pJoin = (SJoinTableNode*)pNode;
+      destroyExprNode((SExprNode*)pNode);
       nodesDestroyNode(pJoin->pLeft);
       nodesDestroyNode(pJoin->pRight);
       nodesDestroyNode(pJoin->pOnCond);
@@ -436,9 +446,12 @@ void nodesDestroyNode(SNode* pNode) {
       break;
     case QUERY_NODE_LIMIT:  // no pointer field
       break;
-    case QUERY_NODE_STATE_WINDOW:
-      nodesDestroyNode(((SStateWindowNode*)pNode)->pExpr);
+    case QUERY_NODE_STATE_WINDOW: {
+      SStateWindowNode* pState = (SStateWindowNode*)pNode;
+      nodesDestroyNode(pState->pCol);
+      nodesDestroyNode(pState->pExpr);
       break;
+    }
     case QUERY_NODE_SESSION_WINDOW: {
       SSessionWindowNode* pSession = (SSessionWindowNode*)pNode;
       nodesDestroyNode((SNode*)pSession->pCol);
@@ -506,6 +519,7 @@ void nodesDestroyNode(SNode* pNode) {
       break;
     case QUERY_NODE_SET_OPERATOR: {
       SSetOperator* pStmt = (SSetOperator*)pNode;
+      nodesDestroyList(pStmt->pProjectionList);
       nodesDestroyNode(pStmt->pLeft);
       nodesDestroyNode(pStmt->pRight);
       nodesDestroyList(pStmt->pOrderByList);
@@ -667,14 +681,15 @@ void nodesDestroyNode(SNode* pNode) {
       nodesDestroyNode(pStmt->pTbName);
       break;
     }
-    case QUERY_NODE_SHOW_DNODE_VARIABLES_STMT:  // no pointer field
+    case QUERY_NODE_SHOW_DNODE_VARIABLES_STMT:
+      nodesDestroyNode(((SShowDnodeVariablesStmt*)pNode)->pDnodeId);
       break;
     case QUERY_NODE_SHOW_CREATE_DATABASE_STMT:
       taosMemoryFreeClear(((SShowCreateDatabaseStmt*)pNode)->pCfg);
       break;
     case QUERY_NODE_SHOW_CREATE_TABLE_STMT:
     case QUERY_NODE_SHOW_CREATE_STABLE_STMT:
-      taosMemoryFreeClear(((SShowCreateTableStmt*)pNode)->pCfg);
+      destroyTableCfg((STableCfg*)((SShowCreateTableStmt*)pNode)->pCfg);
       break;
     case QUERY_NODE_SHOW_TABLE_DISTRIBUTED_STMT:  // no pointer field
     case QUERY_NODE_KILL_CONNECTION_STMT:         // no pointer field
@@ -1846,15 +1861,18 @@ int32_t nodesPartitionCond(SNode** pCondition, SNode** pPrimaryKeyCond, SNode** 
     return partitionLogicCond(pCondition, pPrimaryKeyCond, pTagIndexCond, pTagCond, pOtherCond);
   }
 
+  bool found = false;
   switch (classifyCondition(*pCondition)) {
     case COND_TYPE_PRIMARY_KEY:
       if (NULL != pPrimaryKeyCond) {
         *pPrimaryKeyCond = *pCondition;
+        found = true;
       }
       break;
     case COND_TYPE_TAG_INDEX:
       if (NULL != pTagIndexCond) {
         *pTagIndexCond = *pCondition;
+        found = true;
       }
       if (NULL != pTagCond) {
         SNode* pTempCond = *pCondition;
@@ -1865,21 +1883,26 @@ int32_t nodesPartitionCond(SNode** pCondition, SNode** pPrimaryKeyCond, SNode** 
           }
         }
         *pTagCond = pTempCond;
+        found = true;
       }
       break;
     case COND_TYPE_TAG:
       if (NULL != pTagCond) {
         *pTagCond = *pCondition;
+        found = true;
       }
       break;
     case COND_TYPE_NORMAL:
     default:
       if (NULL != pOtherCond) {
         *pOtherCond = *pCondition;
+        found = true;
       }
       break;
   }
-  *pCondition = NULL;
+  if (found) {
+    *pCondition = NULL;
+  }
 
   return TSDB_CODE_SUCCESS;
 }
